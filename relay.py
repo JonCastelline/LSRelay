@@ -6,10 +6,14 @@ import sys
 import re
 import time
 import asyncio
+import random
+from datetime import datetime, timezone
 from collections import deque
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(SCRIPT_DIR, 'data')
 CONFIG_PATH = os.path.join(SCRIPT_DIR, 'config.json')
+PAIRINGS_PATH = os.path.join(DATA_DIR, 'pairings.json')
 
 # Helper: Strip comments and trailing commas from JSON/JSONC text
 def strip_json_comments(text):
@@ -117,7 +121,7 @@ def select_channel(channels, cli_arg=None, input_func=input):
 
     # Multiple channels available, prompt user in terminal
     print("\n" + "=" * 40)
-    print(" LSRelay Discord Bridge")
+    print(" LSRelay Discord Hub")
     print("=" * 40)
     print("Available channels:")
     for i, (name, cid) in enumerate(channel_list, 1):
@@ -152,11 +156,9 @@ def sanitize_for_game(text):
     """
     if not text:
         return ""
-    # Replace newlines/tabs with spaces
     text = re.sub(r'[\r\n\t]+', ' ', text)
     # Retain standard printable ASCII (32-126) for safe in-game rendering
     text = ''.join(c for c in text if 32 <= ord(c) <= 126)
-    # Collapse multiple consecutive spaces
     text = re.sub(r'\s{2,}', ' ', text).strip()
     return text
 
@@ -171,20 +173,14 @@ def split_message(text, max_length=120):
     chunks = []
     remaining = text.strip()
     while len(remaining) > max_length:
-        # Find the last space within max_length
         split_idx = remaining.rfind(' ', 0, max_length)
         if split_idx <= 0:
-            # No space found, hard cut
             split_idx = max_length
         chunks.append(remaining[:split_idx].strip())
         remaining = remaining[split_idx:].strip()
     if remaining:
         chunks.append(remaining)
     return chunks
-
-def format_game_message(author, message, template="[{author}] {message}"):
-    """Formats the text to be spoken in game."""
-    return template.format(author=author, message=message)
 
 def is_mode_allowed(target_mode, configured_mode):
     """Returns True if target_mode is permitted under configured_mode."""
@@ -194,76 +190,219 @@ def is_mode_allowed(target_mode, configured_mode):
         return tgt in ('ls1', 'ls2')
     return tgt == conf
 
+class PairingManager:
+    """Manages persistent Discord user to in-game character pairings and temporary pairing codes."""
+
+    def __init__(self, filepath=PAIRINGS_PATH, code_expiry_seconds=300):
+        self.filepath = filepath
+        self.code_expiry_seconds = code_expiry_seconds
+        # pending_codes: { "123456": {"character_name": "Jon", "created_at": float} }
+        self.pending_codes = {}
+        self.pairings = self.load_pairings()
+
+    def load_pairings(self):
+        if not os.path.exists(self.filepath):
+            return {}
+        try:
+            with open(self.filepath, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return data if isinstance(data, dict) else {}
+        except Exception as e:
+            print(f"[Pairings] Error loading pairings from {self.filepath}: {e}")
+            return {}
+
+    def save_pairings(self):
+        os.makedirs(os.path.dirname(os.path.abspath(self.filepath)), exist_ok=True)
+        tmp_path = self.filepath + '.tmp'
+        try:
+            with open(tmp_path, 'w', encoding='utf-8') as f:
+                json.dump(self.pairings, f, indent=4)
+            os.replace(tmp_path, self.filepath)
+        except Exception as e:
+            print(f"[Pairings] Error saving pairings to {self.filepath}: {e}")
+
+    def generate_code(self, character_name):
+        self._prune_expired_codes()
+        # Clean existing pending codes for this character
+        char_lower = character_name.strip().lower()
+        for c, data in list(self.pending_codes.items()):
+            if data['character_name'].lower() == char_lower:
+                del self.pending_codes[c]
+
+        code_digits = f"{random.randint(100000, 999999):06d}"
+        formatted = f"{code_digits[:3]}-{code_digits[3:]}"
+        self.pending_codes[code_digits] = {
+            "character_name": character_name.strip(),
+            "created_at": time.time()
+        }
+        return formatted
+
+    def claim_code(self, code_input, discord_user_id):
+        self._prune_expired_codes()
+        clean_code = re.sub(r'[^0-9]', '', str(code_input))
+        if clean_code in self.pending_codes:
+            char_name = self.pending_codes[clean_code]["character_name"]
+            del self.pending_codes[clean_code]
+            self.pairings[str(discord_user_id)] = {
+                "character_name": char_name,
+                "linked_at": datetime.now(timezone.utc).isoformat()
+            }
+            self.save_pairings()
+            return char_name
+        return None
+
+    def unlink_user(self, discord_user_id):
+        key = str(discord_user_id)
+        if key in self.pairings:
+            removed = self.pairings.pop(key)
+            self.save_pairings()
+            return removed.get("character_name")
+        return None
+
+    def get_character_for_user(self, discord_user_id):
+        entry = self.pairings.get(str(discord_user_id))
+        return entry.get("character_name") if entry else None
+
+    def get_user_for_character(self, character_name):
+        char_lower = character_name.strip().lower()
+        for uid, data in self.pairings.items():
+            if data.get("character_name", "").lower() == char_lower:
+                return int(uid)
+        return None
+
+    def _prune_expired_codes(self):
+        now = time.time()
+        expired = [c for c, data in self.pending_codes.items() if now - data["created_at"] > self.code_expiry_seconds]
+        for c in expired:
+            del self.pending_codes[c]
+
 class RelayCore:
-    def __init__(self, config):
+    def __init__(self, config, pairing_manager=None):
         self.config = config
+        self.pairing_manager = pairing_manager or PairingManager()
         self.linkshell_mode = config.get('linkshell_mode', 'ls1').lower()
-        self.game_chat_format = config.get('game_chat_format', '[{author}] {message}')
-        self.tcp_host = config.get('tcp_host', '127.0.0.1')
+        self.tcp_host = config.get('tcp_host', '0.0.0.0')
         self.tcp_port = int(config.get('tcp_port', 45124))
         
-        # Connected game client writers
-        self.active_clients = set()
-        # Deduplication cache: deque of (mode, message_text, timestamp)
-        self.recent_discord_messages = deque()
+        # Multi-client tracking:
+        # writer -> character_name (lowercase)
+        self.char_by_writer = {}
+        # character_name (lowercase) -> writer
+        self.clients_by_char = {}
+        
+        # Deduplication cache for Discord-injected messages: deque of (mode, char_name_lower, message_text, timestamp)
+        self.recent_discord_injections = deque()
         self.dedup_window = 10.0 # seconds
+
+        # Global multi-client deduplication cache: dict of chat_hash -> timestamp
+        self.global_chat_dedup = {}
+        self.global_dedup_window = 3.0 # seconds
+
         self.message_count_relayed = 0
         self.bot = None
         self.active_channel = None
-        self.game_player_name = None
 
-    def record_discord_injection(self, mode, text):
+    def record_discord_injection(self, mode, character_name, text):
         now = time.time()
         self._prune_dedup_cache(now)
-        self.recent_discord_messages.append((mode.lower(), text.strip(), now))
+        self.recent_discord_injections.append((mode.lower(), character_name.lower(), text.strip(), now))
 
     def consume_discord_echo(self, mode, sender, text):
         """Returns True and consumes the cached echo if this message matches a recent
-        Discord injection originating from our character."""
+        Discord injection originating from this specific character."""
         now = time.time()
         self._prune_dedup_cache(now)
-        
-        # Echo suppression only applies to our own in-game character
-        if self.game_player_name and sender.lower() != self.game_player_name.lower():
-            return False
 
         clean = text.strip()
         mode_clean = mode.lower()
-        for idx, (m, t, _) in enumerate(self.recent_discord_messages):
-            if m == mode_clean and t == clean:
-                # Consume the entry so it cannot suppress future legitimate messages
-                del self.recent_discord_messages[idx]
+        sender_clean = sender.lower()
+        for idx, (m, c, t, _) in enumerate(self.recent_discord_injections):
+            if m == mode_clean and c == sender_clean and t == clean:
+                del self.recent_discord_injections[idx]
                 return True
         return False
 
+    def is_global_duplicate(self, mode, sender, text):
+        """Checks if another connected client already reported this identical in-game chat message."""
+        now = time.time()
+        # Prune old hashes
+        expired = [h for h, ts in self.global_chat_dedup.items() if (now - ts) > self.global_dedup_window]
+        for h in expired:
+            del self.global_chat_dedup[h]
+
+        key = f"{mode.lower()}:{sender.lower()}:{text.strip()}"
+        if key in self.global_chat_dedup:
+            return True
+        self.global_chat_dedup[key] = now
+        return False
+
     def _prune_dedup_cache(self, now):
-        while self.recent_discord_messages and (now - self.recent_discord_messages[0][2] > self.dedup_window):
-            self.recent_discord_messages.popleft()
+        while self.recent_discord_injections and (now - self.recent_discord_injections[0][3] > self.dedup_window):
+            self.recent_discord_injections.popleft()
+
+    def get_online_characters(self):
+        """Returns a list of character names currently connected to the hub."""
+        return [c.capitalize() for c in self.clients_by_char.keys()]
+
+    async def send_to_character(self, character_name, payload):
+        """Sends a JSON line to a specific character's connected game client."""
+        writer = self.clients_by_char.get(character_name.lower())
+        if not writer:
+            return False
+        data = (json.dumps(payload) + '\n').encode('utf-8')
+        try:
+            writer.write(data)
+            await writer.drain()
+            return True
+        except Exception as e:
+            print(f"[TCP] Error writing to {character_name}: {e}")
+            self.unregister_client(writer)
+            return False
 
     async def broadcast_to_game(self, payload):
         """Sends a JSON line to all connected game clients."""
-        if not self.active_clients:
+        if not self.char_by_writer:
             return False
         data = (json.dumps(payload) + '\n').encode('utf-8')
-        dead_clients = set()
-        for writer in self.active_clients:
+        dead_writers = set()
+        for writer in list(self.char_by_writer.keys()):
             try:
                 writer.write(data)
                 await writer.drain()
             except Exception as e:
-                print(f"[TCP] Error writing to client: {e}")
-                dead_clients.add(writer)
-                try:
-                    writer.close()
-                except Exception:
-                    pass
-        self.active_clients.difference_update(dead_clients)
+                print(f"[TCP] Error broadcasting to client: {e}")
+                dead_writers.add(writer)
+        for w in dead_writers:
+            self.unregister_client(w)
         return True
+
+    def register_client(self, writer, character_name):
+        char_clean = character_name.strip().lower()
+        # If character had an old writer, close it
+        old_writer = self.clients_by_char.get(char_clean)
+        if old_writer and old_writer != writer:
+            self.char_by_writer.pop(old_writer, None)
+            try:
+                old_writer.close()
+            except Exception:
+                pass
+        self.clients_by_char[char_clean] = writer
+        self.char_by_writer[writer] = char_clean
+        print(f"[TCP] Registered client for character '{character_name}'")
+
+    def unregister_client(self, writer):
+        char_clean = self.char_by_writer.pop(writer, None)
+        if char_clean and self.clients_by_char.get(char_clean) == writer:
+            del self.clients_by_char[char_clean]
+            print(f"[TCP] Unregistered client for character '{char_clean}'")
+        try:
+            writer.close()
+        except Exception:
+            pass
 
     async def handle_tcp_client(self, reader, writer):
         addr = writer.get_extra_info('peername')
-        print(f"[TCP] Windower client connected from {addr}")
-        self.active_clients.add(writer)
+        print(f"[TCP] New connection from {addr}")
 
         # Send initial config to addon
         init_payload = {
@@ -288,22 +427,18 @@ class RelayCore:
                     line = line.strip()
                     if line:
                         try:
-                            await self.process_game_message(line)
+                            await self.process_game_message(line, writer)
                         except Exception as msg_err:
                             print(f"[TCP] Error processing game message: {msg_err}")
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            print(f"[TCP] Client connection error: {e}")
+            print(f"[TCP] Client connection error from {addr}: {e}")
         finally:
-            print(f"[TCP] Windower client disconnected from {addr}")
-            self.active_clients.discard(writer)
-            try:
-                writer.close()
-            except Exception:
-                pass
+            print(f"[TCP] Disconnected: {addr}")
+            self.unregister_client(writer)
 
-    async def process_game_message(self, line):
+    async def process_game_message(self, line, writer):
         try:
             payload = json.loads(line)
         except json.JSONDecodeError:
@@ -312,8 +447,24 @@ class RelayCore:
 
         msg_type = payload.get('type')
         if msg_type == 'hello':
-            self.game_player_name = payload.get('player')
-            print(f"[Game->Relay] Connected player name: {self.game_player_name}")
+            player = payload.get('player', 'Unknown')
+            if player and player != 'Unknown':
+                self.register_client(writer, player)
+            return
+
+        if msg_type == 'request_pair_code':
+            player = payload.get('player', 'Unknown')
+            if player and player != 'Unknown':
+                self.register_client(writer, player)
+                code = self.pairing_manager.generate_code(player)
+                resp = {
+                    "type": "pair_code",
+                    "code": code,
+                    "expires_in": self.pairing_manager.code_expiry_seconds
+                }
+                writer.write((json.dumps(resp) + '\n').encode('utf-8'))
+                await writer.drain()
+                print(f"[Pairing] Generated code '{code}' for character '{player}'")
             return
 
         if msg_type == 'chat':
@@ -324,9 +475,12 @@ class RelayCore:
             if not is_mode_allowed(mode, self.linkshell_mode):
                 return
 
-            # Check if this was a Discord-injected message echoing back
+            # Check if this was a Discord-injected message echoing back from that character
             if self.consume_discord_echo(mode, sender, message):
-                # Suppress echo
+                return
+
+            # Check if another online client already relayed this exact message to Discord
+            if self.is_global_duplicate(mode, sender, message):
                 return
 
             self.message_count_relayed += 1
@@ -336,7 +490,6 @@ class RelayCore:
                 else:
                     formatted = f"**[LS] {sender}:** {message}"
                 try:
-                    # Prevent mass-mentions like @everyone or @here
                     await self.active_channel.send(
                         formatted,
                         allowed_mentions=discord.AllowedMentions.none()
@@ -346,15 +499,17 @@ class RelayCore:
             else:
                 print(f"[Relay] Warning: No active Discord channel bound. Message not sent: {message}")
 
-        elif msg_type == 'status':
-            print(f"[Game->Relay] Status update: {payload}")
+        elif msg_type == 'config':
+            # Addon requests mode change
+            new_mode = payload.get('linkshell_mode')
+            if new_mode in ('ls1', 'ls2', 'both'):
+                self.linkshell_mode = new_mode
+                print(f"[Config] Mode updated from addon: {self.linkshell_mode}")
 
     async def process_discord_message(self, message):
-        """Processes an incoming Discord message, parses commands, and sends to game."""
-        # Use clean_content to resolve mentions (@User, #channel) to clean text
+        """Processes an incoming Discord message, looks up linked character, and routes to that character's client."""
         content = message.clean_content.strip()
 
-        # Parse command prefixes explicitly
         target_mode = None
         raw_text = None
         if content.startswith(('!l ', '!ls ')):
@@ -372,21 +527,32 @@ class RelayCore:
         if not raw_text:
             return
 
-        # Check if target mode is permitted
+        # Check if target mode is permitted under current hub config
         if not is_mode_allowed(target_mode, self.linkshell_mode):
             await message.reply(
                 f"⚠️ Linkshell `{target_mode.upper()}` is not active. Current mode is `{self.linkshell_mode}`."
             )
             return
 
-        # Check game client connectivity
-        if not self.active_clients:
-            await message.reply("⚠️ Game client is not currently connected to LSRelay.")
+        # Look up linked character for this Discord author
+        char_name = self.pairing_manager.get_character_for_user(message.author.id)
+        if not char_name:
+            await message.reply(
+                "⚠️ You haven't linked your character yet!\n"
+                "In FFXI, type `//lsr link` to get a 6-digit code, then type `!lslink <code>` here."
+            )
             return
 
-        # Format and sanitize
-        formatted = format_game_message(message.author.display_name, raw_text, self.game_chat_format)
-        sanitized = sanitize_for_game(formatted)
+        # Check if character's client is currently connected
+        char_clean = char_name.lower()
+        if char_clean not in self.clients_by_char:
+            await message.reply(
+                f"⚠️ Your character **{char_name}** is not currently online or connected to LSRelay."
+            )
+            return
+
+        # Sanitize for FFXI chat (strip emojis/control chars)
+        sanitized = sanitize_for_game(raw_text)
         if not sanitized:
             await message.reply("⚠️ Message contained only unsupported characters or was empty.")
             return
@@ -394,13 +560,17 @@ class RelayCore:
         # Split into max 120 character chunks for FFXI chat bar
         chunks = split_message(sanitized, max_length=120)
 
+        # Route chunks strictly to THIS character's client
         for chunk in chunks:
-            self.record_discord_injection(target_mode, chunk)
-            await self.broadcast_to_game({
+            self.record_discord_injection(target_mode, char_name, chunk)
+            sent = await self.send_to_character(char_name, {
                 "type": "inject_chat",
                 "mode": target_mode,
                 "message": chunk
             })
+            if not sent:
+                await message.reply(f"⚠️ Failed to deliver message to {char_name}'s client.")
+                return
 
         try:
             await message.add_reaction("✅")
@@ -433,8 +603,8 @@ def create_bot(core):
 
         content = message.clean_content.strip()
 
-        # Check for relay bot commands like !lsr status
-        if content.startswith(('!lsr', '!relay')):
+        # Check for bot commands
+        if content.startswith(('!lsr', '!relay', '!lslink', '!lsunlink', '!lswho', '!lsstatus')):
             await bot.process_commands(message)
             return
 
@@ -445,21 +615,65 @@ def create_bot(core):
 
         await bot.process_commands(message)
 
+    @bot.command(name='lslink')
+    async def lslink_cmd(ctx, code: str = None):
+        """Links your Discord user to your in-game character using a pairing code."""
+        if not code:
+            await ctx.reply("Usage: `!lslink <6-digit-code>` (Get your code in FFXI using `//lsr link`)")
+            return
+        char_name = core.pairing_manager.claim_code(code, ctx.author.id)
+        if char_name:
+            await ctx.reply(f"✅ Successfully linked your Discord account to **{char_name}**!")
+        else:
+            await ctx.reply("❌ Invalid or expired pairing code. In FFXI, type `//lsr link` to generate a new code.")
+
+    @bot.command(name='lsunlink')
+    async def lsunlink_cmd(ctx):
+        """Unlinks your Discord user from your in-game character."""
+        removed = core.pairing_manager.unlink_user(ctx.author.id)
+        if removed:
+            await ctx.reply(f"✅ Unlinked your Discord account from **{removed}**.")
+        else:
+            await ctx.reply("ℹ️ You do not currently have a linked character.")
+
+    @bot.command(name='lswho')
+    async def lswho_cmd(ctx):
+        """Lists linked characters and their online status."""
+        pairings = core.pairing_manager.pairings
+        if not pairings:
+            await ctx.send("No characters are currently linked. Type `//lsr link` in FFXI to get started.")
+            return
+
+        online_chars = {c.lower() for c in core.clients_by_char.keys()}
+        lines = []
+        for uid_str, data in pairings.items():
+            char = data.get("character_name", "Unknown")
+            is_online = char.lower() in online_chars
+            status_dot = "🟢 **Online**" if is_online else "⚪ *Offline*"
+            lines.append(f"• <@{uid_str}> $\\rightarrow$ **{char}** ({status_dot})")
+
+        embed = discord.Embed(title="Linkshell Directory", description="\n".join(lines), color=0x3498db)
+        await ctx.send(embed=embed)
+
+    @bot.command(name='lsstatus')
+    async def lsstatus_cmd(ctx):
+        """Displays hub status."""
+        online = core.get_online_characters()
+        online_str = ", ".join(online) if online else "None"
+        embed = discord.Embed(title="LSRelay Hub Status", color=0x2ecc71 if online else 0xe74c3c)
+        embed.add_field(name="Online Characters", value=online_str, inline=False)
+        embed.add_field(name="Total Linked", value=str(len(core.pairing_manager.pairings)), inline=True)
+        embed.add_field(name="Linkshell Mode", value=core.linkshell_mode.upper(), inline=True)
+        embed.add_field(name="Relayed Messages", value=str(core.message_count_relayed), inline=True)
+        embed.set_footer(text="Use !l <message> to speak in LS1 | !lswho to view linked members")
+        await ctx.send(embed=embed)
+
     @bot.command(name='lsr')
     async def lsr_cmd(ctx, action: str = None, *, arg: str = None):
         """Relay status and control command."""
         action = (action or 'status').lower()
         if action == 'status':
-            client_status = f"Connected ({len(core.active_clients)} active client)" if core.active_clients else "Disconnected"
-            embed = discord.Embed(title="LSRelay Status", color=0x2ecc71 if core.active_clients else 0xe74c3c)
-            embed.add_field(name="Game Client", value=client_status, inline=True)
-            embed.add_field(name="Character", value=core.game_player_name or "Unknown", inline=True)
-            embed.add_field(name="Linkshell Mode", value=core.linkshell_mode.upper(), inline=True)
-            embed.add_field(name="Channel", value=f"<#{core.active_channel.id}>" if core.active_channel else "None", inline=True)
-            embed.add_field(name="Relayed Messages", value=str(core.message_count_relayed), inline=True)
-            embed.add_field(name="Chat Format", value=f"`{core.game_chat_format}`", inline=False)
-            embed.set_footer(text="Use !l <message> for LS1, !l2 <message> for LS2")
-            await ctx.send(embed=embed)
+            await lsstatus_cmd(ctx)
         elif action == 'mode':
             if not arg or arg.lower() not in ('ls1', 'ls2', 'both'):
                 await ctx.send("Usage: `!lsr mode <ls1|ls2|both>`")
@@ -471,7 +685,7 @@ def create_bot(core):
             })
             await ctx.send(f"✅ Linkshell mode updated to `{core.linkshell_mode.upper()}`.")
         else:
-            await ctx.send("Unknown action. Available: `!lsr status`, `!lsr mode <ls1|ls2|both>`")
+            await ctx.send("Available: `!lsr status`, `!lsr mode <ls1|ls2|both>`, `!lslink <code>`, `!lsunlink`, `!lswho`")
 
     return bot
 
@@ -485,7 +699,6 @@ async def main():
     core = RelayCore(config)
     bot = create_bot(core)
 
-    # Start TCP Server
     server = await asyncio.start_server(core.handle_tcp_client, core.tcp_host, core.tcp_port)
     print(f"[TCP] Server listening on {core.tcp_host}:{core.tcp_port}")
 

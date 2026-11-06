@@ -5,7 +5,6 @@
         "Discord Server 2 - alt-chat": 987654321098765432
     },
     "linkshell_mode": "ls1",
-    "game_chat_format": "[{author}] {message}",
-    "tcp_host": "127.0.0.1",
+    "tcp_host": "0.0.0.0",
     "tcp_port": 45124
 }
