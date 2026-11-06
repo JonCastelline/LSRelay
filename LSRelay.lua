@@ -1,6 +1,6 @@
 _addon.name = 'LSRelay'
 _addon.author = 'Frodobald'
-_addon.version = '1.2.1'
+_addon.version = '1.3.0'
 _addon.commands = {'lsrelay', 'lsr'}
 
 require('strings')
@@ -14,6 +14,10 @@ local defaults = {
     tcp_host = '127.0.0.1',
     tcp_port = 45124,
     linkshell_mode = 'ls1', -- 'ls1', 'ls2', or 'both'
+    relay_tells = true,
+    relay_gm = true,
+    gm_unload_addons = 'trust,react,cureplease,autoinvite',
+    gm_stop_actions = true,
     debug = false
 }
 
@@ -234,6 +238,7 @@ local function handle_incoming_server_message(line)
         windower.add_to_chat(200, '--------------------------------------------------')
     elseif data.type == 'inject_chat' then
         local mode = (data.mode or 'ls1'):lower()
+        local target = data.target
         local msg = data.message or ''
         if msg ~= '' then
             if #chat_queue >= max_queue_size then
@@ -241,6 +246,7 @@ local function handle_incoming_server_message(line)
             end
             table.insert(chat_queue, {
                 mode = mode,
+                target = target,
                 message = msg
             })
             if settings.debug then
@@ -306,20 +312,47 @@ local function process_chat_queue()
     end
 
     local item = table.remove(chat_queue, 1)
-    local active_mode = settings.linkshell_mode:lower()
-    local use_ls2 = false
-    if active_mode == 'ls2' then
-        use_ls2 = true
-    elseif active_mode == 'ls1' then
-        use_ls2 = false
+    local cmd = nil
+    if item.mode == 'tell' then
+        cmd = '/t ' .. tostring(item.target) .. ' ' .. item.message
     else
-        use_ls2 = (item.mode == 'ls2')
+        local active_mode = settings.linkshell_mode:lower()
+        local use_ls2 = false
+        if active_mode == 'ls2' then
+            use_ls2 = true
+        elseif active_mode == 'ls1' then
+            use_ls2 = false
+        else
+            use_ls2 = (item.mode == 'ls2')
+        end
+        local prefix = use_ls2 and '/l2 ' or '/l '
+        cmd = prefix .. item.message
     end
-    local prefix = use_ls2 and '/l2 ' or '/l '
-    local cmd = prefix .. item.message
 
     windower.chat.input(cmd)
     last_chat_time = now
+end
+
+local function trigger_gm_safety_protocol(sender)
+    windower.add_to_chat(167, '==================================================')
+    windower.add_to_chat(167, '[LSRelay ALERT] GM MESSAGE RECEIVED FROM: ' .. tostring(sender))
+    windower.add_to_chat(167, '[LSRelay ALERT] Executing safety protocol...')
+    windower.add_to_chat(167, '==================================================')
+
+    pcall(function() windower.play_sound(windower.addon_path .. 'alert.wav') end)
+
+    if settings.gm_unload_addons and settings.gm_unload_addons ~= '' then
+        for addon in settings.gm_unload_addons:gmatch('[^,%s]+') do
+            local clean_addon = addon:lower()
+            if clean_addon ~= 'lsrelay' and clean_addon ~= 'lsr' then
+                windower.send_command('lua unload ' .. clean_addon)
+            end
+        end
+    end
+
+    if settings.gm_stop_actions then
+        windower.send_command('input /attack off; input //trust stop')
+    end
 end
 
 -- Windower Render Loop
@@ -330,6 +363,39 @@ end)
 
 -- Listen for in-game Linkshell chat messages
 windower.register_event('chat message', function(message, sender, mode, gm)
+    -- GM Detection (gm boolean flag, or mode 12/13)
+    if gm or mode == 12 or mode == 13 then
+        if settings.relay_gm then
+            local clean_msg = message
+            if clean_msg.strip_format then
+                clean_msg = clean_msg:strip_format()
+            end
+            send_payload({
+                type = 'gm',
+                sender = sender or 'GM',
+                message = clean_msg
+            })
+            trigger_gm_safety_protocol(sender or 'GM')
+        end
+        return
+    end
+
+    -- Player Tell Detection (mode 3 = incoming tell)
+    if mode == 3 then
+        if settings.relay_tells then
+            local clean_msg = message
+            if clean_msg.strip_format then
+                clean_msg = clean_msg:strip_format()
+            end
+            send_payload({
+                type = 'tell',
+                sender = sender or 'Unknown',
+                message = clean_msg
+            })
+        end
+        return
+    end
+
     local ls_mode = nil
     if mode == 5 then
         ls_mode = 'ls1'
@@ -375,6 +441,11 @@ windower.register_event('addon command', function(command, ...)
         print_msg('  Hub Server: ' .. settings.tcp_host .. ':' .. settings.tcp_port)
         print_msg('  Connection: ' .. (is_connected and 'Connected' or 'Disconnected'))
         print_msg('  Linkshell Mode: ' .. settings.linkshell_mode:upper())
+        print_msg('  Private Tells: ' .. (settings.relay_tells and 'ON' or 'OFF'))
+        print_msg('  GM Alerts: ' .. (settings.relay_gm and 'ON' or 'OFF'))
+        if settings.relay_gm and settings.gm_unload_addons ~= '' then
+            print_msg('  GM Unload Addons: ' .. settings.gm_unload_addons)
+        end
         print_msg('  Queued Messages: ' .. tostring(#chat_queue))
     elseif command == 'link' then
         if not is_connected then
@@ -423,6 +494,30 @@ windower.register_event('addon command', function(command, ...)
         if new_mode == 'ls2' then
             print_msg('(All Discord messages will be spoken via /l2 and incoming LS2 chat relayed)')
         end
+    elseif command == 'tells' then
+        local arg = args[1] and args[1]:lower()
+        if arg == 'on' then settings.relay_tells = true
+        elseif arg == 'off' then settings.relay_tells = false
+        else settings.relay_tells = not settings.relay_tells end
+        config.save(settings)
+        print_msg('Private Tells relay: ' .. (settings.relay_tells and 'ON' or 'OFF'))
+    elseif command == 'gm' then
+        local arg = args[1] and args[1]:lower()
+        if arg == 'on' then settings.relay_gm = true
+        elseif arg == 'off' then settings.relay_gm = false
+        else settings.relay_gm = not settings.relay_gm end
+        config.save(settings)
+        print_msg('GM Emergency Alerts: ' .. (settings.relay_gm and 'ON' or 'OFF'))
+    elseif command == 'gmunload' then
+        local list = args[1]
+        if not list or list == '' then
+            print_msg('Current GM unload addons: ' .. tostring(settings.gm_unload_addons))
+            print_msg('Usage: //lsr gmunload <addon1,addon2,...>')
+            return
+        end
+        settings.gm_unload_addons = list
+        config.save(settings)
+        print_msg('GM unload addons updated to: ' .. list)
     elseif command == 'reconnect' then
         print_msg('Reconnecting to Hub...')
         try_connect()
@@ -437,6 +532,9 @@ windower.register_event('addon command', function(command, ...)
         print_msg('  //lsr host <host> - Set Hub IP or domain')
         print_msg('  //lsr port <port> - Set Hub TCP port')
         print_msg('  //lsr mode <ls1|ls2|both> - Set active linkshell')
+        print_msg('  //lsr tells [on|off] - Toggle private tells relay to your Discord DM')
+        print_msg('  //lsr gm [on|off] - Toggle high-priority GM alerts and safety protocol')
+        print_msg('  //lsr gmunload <addons> - Comma-separated addons to unload on GM alert')
         print_msg('  //lsr reconnect - Force reconnect to Hub')
         print_msg('  //lsr debug - Toggle debug output')
     end

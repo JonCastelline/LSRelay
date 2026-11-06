@@ -326,5 +326,122 @@ class TestRelayCoreMultiTenant(unittest.IsolatedAsyncioTestCase):
             except Exception:
                 pass
 
+    async def test_incoming_tell_forwarded_to_discord_dm(self):
+        code = self.pm.generate_code("JonChar")
+        self.pm.claim_code(code, 111111)
+
+        mock_user = AsyncMock()
+        mock_bot = MagicMock()
+        mock_bot.get_user.return_value = mock_user
+        self.core.bot = mock_bot
+
+        mock_writer = MagicMock()
+        self.core.register_client(mock_writer, "JonChar")
+
+        tell_payload = json.dumps({
+            "type": "tell",
+            "sender": "AliceFriend",
+            "message": "Are you ready for Dyna?"
+        })
+        await self.core.process_game_message(tell_payload, mock_writer)
+
+        mock_user.send.assert_awaited_once()
+        sent_text = mock_user.send.call_args[0][0]
+        self.assertIn("[Tell from AliceFriend]:", sent_text)
+        self.assertIn("Are you ready for Dyna?", sent_text)
+        self.assertEqual(self.core.last_tell_by_user[111111], "AliceFriend")
+
+    async def test_incoming_gm_alert_forwarded_to_discord_dm(self):
+        code = self.pm.generate_code("JonChar")
+        self.pm.claim_code(code, 111111)
+
+        mock_user = AsyncMock()
+        mock_bot = MagicMock()
+        mock_bot.get_user.return_value = mock_user
+        self.core.bot = mock_bot
+
+        mock_writer = MagicMock()
+        self.core.register_client(mock_writer, "JonChar")
+
+        gm_payload = json.dumps({
+            "type": "gm",
+            "sender": "GM_Dave",
+            "message": "Greetings, please respond."
+        })
+        await self.core.process_game_message(gm_payload, mock_writer)
+
+        mock_user.send.assert_awaited_once()
+        sent_text = mock_user.send.call_args[0][0]
+        self.assertIn("CRITICAL GM ALERT", sent_text)
+        self.assertIn("GM_Dave", sent_text)
+        self.assertIn("Greetings, please respond.", sent_text)
+
+    async def test_process_dm_message_tell_and_reply(self):
+        code = self.pm.generate_code("JonChar")
+        self.pm.claim_code(code, 111111)
+
+        mock_writer = MagicMock()
+        mock_writer.drain = AsyncMock()
+        self.core.register_client(mock_writer, "JonChar")
+
+        # 1. Send tell: !t Bob Hello Bob!
+        mock_msg = MagicMock()
+        mock_msg.clean_content = "!t Bob Hello Bob!"
+        mock_msg.author.id = 111111
+        mock_msg.reply = AsyncMock()
+        mock_msg.add_reaction = AsyncMock()
+
+        await self.core.process_dm_message(mock_msg)
+
+        mock_writer.write.assert_called_once()
+        written = json.loads(mock_writer.write.call_args[0][0].decode('utf-8'))
+        self.assertEqual(written["type"], "inject_chat")
+        self.assertEqual(written["mode"], "tell")
+        self.assertEqual(written["target"], "Bob")
+        self.assertEqual(written["message"], "Hello Bob!")
+        mock_msg.add_reaction.assert_awaited_once_with("✅")
+        self.assertEqual(self.core.last_tell_by_user[111111], "Bob")
+
+        # 2. Reply: !r Thanks!
+        mock_writer.write.reset_mock()
+        mock_msg.add_reaction.reset_mock()
+        mock_msg.clean_content = "!r Thanks!"
+
+        await self.core.process_dm_message(mock_msg)
+
+        mock_writer.write.assert_called_once()
+        written2 = json.loads(mock_writer.write.call_args[0][0].decode('utf-8'))
+        self.assertEqual(written2["type"], "inject_chat")
+        self.assertEqual(written2["mode"], "tell")
+        self.assertEqual(written2["target"], "Bob")
+        self.assertEqual(written2["message"], "Thanks!")
+        mock_msg.add_reaction.assert_awaited_once_with("✅")
+
+    async def test_process_dm_message_unlinked(self):
+        mock_msg = MagicMock()
+        mock_msg.clean_content = "!t Bob Hello"
+        mock_msg.author.id = 999999
+        mock_msg.reply = AsyncMock()
+
+        await self.core.process_dm_message(mock_msg)
+        mock_msg.reply.assert_awaited_once()
+        self.assertIn("haven't linked", mock_msg.reply.call_args[0][0])
+
+    async def test_process_dm_message_reply_without_prior_tell(self):
+        code = self.pm.generate_code("JonChar")
+        self.pm.claim_code(code, 111111)
+
+        mock_writer = MagicMock()
+        self.core.register_client(mock_writer, "JonChar")
+
+        mock_msg = MagicMock()
+        mock_msg.clean_content = "!r Still there?"
+        mock_msg.author.id = 111111
+        mock_msg.reply = AsyncMock()
+
+        await self.core.process_dm_message(mock_msg)
+        mock_msg.reply.assert_awaited_once()
+        self.assertIn("No recent tell sender", mock_msg.reply.call_args[0][0])
+
 if __name__ == '__main__':
     unittest.main()

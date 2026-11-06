@@ -11,6 +11,9 @@ Designed to run as a central **Hub & Spoke** service for an entire Linkshell or 
 - **Direct In-Game Speech**:
   - When you type `!l <message>` in Discord, your message speaks **directly from your in-game character** into Linkshell.
   - When your friends type `!l <message>`, it speaks from **their** characters.
+- **Private Tells & GM Emergency Alerts (Direct to your Discord DM)**:
+  - Incoming tells route privately to your Discord 1-on-1 DM with the bot. Reply anytime with `!r <msg>` or `!t <Player> <msg>`.
+  - GM communications trigger high-priority alerts and an automatic emergency response (configurable addon unload and action stop).
 - **One-Time Pairing (`//lsr link` & `!lslink`)**:
   - Friends don't need Discord developer accounts or bot tokens. They simply run `//lsr link` in FFXI and enter their 6-digit code in Discord.
 - **Multi-Client Deduplication**:
@@ -129,6 +132,8 @@ To run continuously in the background on Windows, you can use Task Scheduler (tr
 | :--- | :--- |
 | `!l <message>` | Speaks `<message>` into Linkshell 1 through your in-game character. |
 | `!l2 <message>` | Speaks `<message>` into Linkshell 2 through your in-game character (only active if `linkshell_mode` is `"both"` or `"ls2"`). |
+| `!t <Player> <msg>` | (In Bot DM) Sends a private tell `/t <Player> <msg>` from your character. |
+| `!r <message>` | (In Bot DM) Replies `/t <LastSender> <message>` to the last person who sent you a tell. |
 | `!lslink <code>` | Links your Discord account to your character using a 6-digit code. |
 | `!lsunlink` | Removes your Discord account linkage. |
 | `!lswho` | Displays the directory of linked members and who is currently online in-game. |
@@ -142,10 +147,13 @@ To run continuously in the background on Windows, you can use Task Scheduler (tr
 | Command | Description |
 | :--- | :--- |
 | `//lsr link` | Requests a 5-minute pairing code to link with Discord. |
-| `//lsr status` | Displays character name, Hub address, connection status, and mode. |
+| `//lsr status` | Displays character name, Hub address, connection status, mode, and alert settings. |
 | `//lsr host <host>` | Configures the Hub IP or domain (e.g. `//lsr host dads.homepokerleague.com`). |
 | `//lsr port <port>` | Configures the Hub TCP port. |
 | `//lsr mode <ls1\|ls2\|both>` | Switches monitored Linkshell locally. |
+| `//lsr tells [on\|off]` | Toggles private tells relay to your Discord DM. |
+| `//lsr gm [on\|off]` | Toggles high-priority GM alerts and emergency protocol. |
+| `//lsr gmunload <addons>` | Comma-separated list of addons to automatically unload on GM alert. |
 | `//lsr reconnect` | Forces a reconnect to the Hub. |
 | `//lsr debug` | Toggles verbose network and queue debug output. |
 
@@ -157,4 +165,4 @@ Run the automated test suite with Python 3.10+:
 ```bash
 python test_relay.py
 ```
-All 21 unit and integration tests cover pairing codes, targeted client routing, global deduplication, and connection lifecycle.
+All 26 unit and integration tests cover pairing codes, targeted client routing, private tell DM forwarding, GM emergency alerts, global deduplication, and connection lifecycle.
