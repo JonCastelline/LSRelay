@@ -28,7 +28,34 @@ Designed to run as a central **Hub & Spoke** service for an entire Linkshell or 
 
 ---
 
-## Hub Setup (Server / PC)
+## Player Setup (Windower 4)
+
+Linkshell members only need the `LSRelay` Windower addon.
+
+1. Copy the `LSRelay` folder to `C:\Program Files (x86)\Windower4\addons\LSRelay` (or `C:\FFXI\addons\LSRelay`).
+2. In FFXI console:
+   ```text
+   //lua load LSRelay
+   ```
+3. Set your Hub server address (if connecting to a remote host):
+   ```text
+   //lsr host your-server-ip-or-domain.com
+   ```
+4. Link your Discord account:
+   ```text
+   //lsr link
+   ```
+   The addon will display a 6-digit code:
+   `[LSRelay] Your Discord pairing code is: 582-194`
+5. In your Discord channel, type:
+   ```text
+   !lslink 582-194
+   ```
+   The bot will confirm your account is linked!
+
+---
+
+## Hub Setup (Server / Host)
 
 The Hub hosts the Discord bot and the TCP server for connecting game clients.
 
@@ -58,17 +85,7 @@ Copy `config.example.json` to `config.json`:
 
 ### 3. Run the Hub
 
-#### Windows Setup
-You can run the Hub directly from PowerShell or Command Prompt:
-```powershell
-python relay.py
-# Or specify the channel name directly:
-python relay.py "Main Server - ls-chat"
-```
-
-To run continuously in the background on Windows, you can use Task Scheduler (trigger on user login, Action: `python.exe relay.py "Main Server - ls-chat"`) or run via a tool like [NSSM](https://nssm.cc/) to run as a native Windows service.
-
-#### Linux / systemd Setup
+#### Linux / Raspberry Pi / systemd Setup
 Create `/etc/systemd/system/lsrelay.service`:
 ```ini
 [Unit]
@@ -77,9 +94,9 @@ After=network.target
 
 [Service]
 Type=simple
-User=pi
-WorkingDirectory=/home/pi/LSRelay
-ExecStart=/usr/bin/python3 /home/pi/LSRelay/relay.py "Main Server - ls-chat"
+User=fishy
+WorkingDirectory=/home/fishy/LSRelay
+ExecStart=/home/fishy/LSRelay/venv/bin/python relay.py
 Restart=always
 RestartSec=5
 
@@ -89,36 +106,18 @@ WantedBy=multi-user.target
 Enable and start:
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable lsrelay
-sudo systemctl start lsrelay
+sudo systemctl enable --now lsrelay
 ```
 
----
+#### Windows Setup
+You can run the Hub directly from PowerShell or Command Prompt:
+```powershell
+python relay.py
+# Or specify the channel name directly:
+python relay.py "Main Server - ls-chat"
+```
 
-## Player Setup (Windower 4)
-
-Linkshell members only need the `LSRelay` Windower addon.
-
-1. Copy the `LSRelay` folder to `C:\FFXI\addons\LSRelay`.
-2. In FFXI console:
-   ```text
-   //lua load LSRelay
-   ```
-3. Set your Hub server address (if not running locally):
-   ```text
-   //lsr host your-server-ip-or-domain.com
-   ```
-4. Link your Discord account:
-   ```text
-   //lsr link
-   ```
-   The addon will display a 6-digit code:
-   `[LSRelay] Your Discord pairing code is: 582-194`
-5. In your Discord channel, type:
-   ```text
-   !lslink 582-194
-   ```
-   The bot will confirm your account is linked!
+To run continuously in the background on Windows, you can use Task Scheduler (trigger on user login, Action: `python.exe relay.py "Main Server - ls-chat"`) or run via a tool like [NSSM](https://nssm.cc/) to run as a native Windows service.
 
 ---
 
@@ -144,7 +143,7 @@ Linkshell members only need the `LSRelay` Windower addon.
 | :--- | :--- |
 | `//lsr link` | Requests a 5-minute pairing code to link with Discord. |
 | `//lsr status` | Displays character name, Hub address, connection status, and mode. |
-| `//lsr host <host>` | Configures the Hub IP or domain (e.g. `//lsr host pi.home.net`). |
+| `//lsr host <host>` | Configures the Hub IP or domain (e.g. `//lsr host dads.homepokerleague.com`). |
 | `//lsr port <port>` | Configures the Hub TCP port. |
 | `//lsr mode <ls1\|ls2\|both>` | Switches monitored Linkshell locally. |
 | `//lsr reconnect` | Forces a reconnect to the Hub. |
