@@ -308,6 +308,7 @@ class RelayCore:
         self.message_count_relayed = 0
         self.bot = None
         self.active_channel = None
+        self.last_tell_by_user = {}
 
     def record_discord_injection(self, mode, character_name, text):
         now = time.time()
@@ -530,6 +531,44 @@ class RelayCore:
                 self.linkshell_mode = new_mode
                 print(f"[Config] Mode updated from addon: {self.linkshell_mode}")
 
+        elif msg_type == 'tell':
+            char_clean = self.char_by_writer.get(writer)
+            if char_clean:
+                sender = payload.get('sender', 'Unknown')
+                message = payload.get('message', '').strip()
+                user_id = self.pairing_manager.get_user_for_character(char_clean)
+                if user_id and self.bot:
+                    self.last_tell_by_user[user_id] = sender
+                    try:
+                        user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
+                        if user:
+                            formatted = f"💬 **[Tell from {sender}]:** {message}\n*(Reply with `!r <msg>` or `!t {sender} <msg>`)*"
+                            await user.send(formatted)
+                    except Exception as e:
+                        print(f"[Tell->Discord] Failed to send DM to user {user_id}: {e}")
+
+        elif msg_type == 'gm':
+            char_clean = self.char_by_writer.get(writer)
+            if char_clean:
+                sender = payload.get('sender', 'GM')
+                message = payload.get('message', '').strip()
+                user_id = self.pairing_manager.get_user_for_character(char_clean)
+                if user_id and self.bot:
+                    self.last_tell_by_user[user_id] = sender
+                    try:
+                        user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
+                        if user:
+                            formatted = (
+                                f"🚨🚨🚨 **CRITICAL GM ALERT** 🚨🚨🚨\n"
+                                f"Character: **{char_clean.capitalize()}**\n"
+                                f"From: **{sender}**\n"
+                                f"Message: {message}\n"
+                                f"*(Reply with `!t {sender} <msg>` or `!r <msg>`)*"
+                            )
+                            await user.send(formatted)
+                    except Exception as e:
+                        print(f"[GM->Discord] Failed to send GM alert DM to user {user_id}: {e}")
+
     async def process_discord_message(self, message):
         """Processes an incoming Discord message, looks up linked character, and routes to that character's client."""
         content = message.clean_content.strip()
@@ -601,6 +640,88 @@ class RelayCore:
         except Exception:
             pass
 
+    async def process_dm_message(self, message):
+        """Processes private direct messages (DMs) to the bot for /tell sending and replying."""
+        content = message.clean_content.strip()
+        user_id = message.author.id
+
+        char_name = self.pairing_manager.get_character_for_user(user_id)
+        if not char_name:
+            await message.reply(
+                "⚠️ You haven't linked your character yet!\n"
+                "In FFXI, type `//lsr link` to get a 6-digit code, then type `!lslink <code>` in the server."
+            )
+            return
+
+        target_player = None
+        raw_text = None
+
+        if content.startswith(('!t ', '!tell ')):
+            parts = content.split(None, 2)
+            if len(parts) >= 3:
+                target_player = parts[1].strip()
+                raw_text = parts[2].strip()
+            else:
+                await message.reply("Usage: `!t <PlayerName> <message>`")
+                return
+        elif content.startswith(('!r ', '!reply ')):
+            target_player = self.last_tell_by_user.get(user_id)
+            if not target_player:
+                await message.reply("⚠️ No recent tell sender to reply to. Use `!t <PlayerName> <message>`.")
+                return
+            parts = content.split(None, 1)
+            raw_text = parts[1].strip() if len(parts) > 1 else ""
+        elif content in ('!t', '!tell'):
+            await message.reply("Usage: `!t <PlayerName> <message>`")
+            return
+        elif content in ('!r', '!reply'):
+            await message.reply("Usage: `!r <message>`")
+            return
+        elif content.startswith(('!l ', '!ls ', '!l2 ', '!ls2 ')) or content in ('!l', '!ls', '!l2', '!ls2'):
+            await self.process_discord_message(message)
+            return
+        else:
+            await message.reply(
+                "Direct Message Commands:\n"
+                "• `!t <PlayerName> <message>` — Send a tell to a player\n"
+                "• `!r <message>` — Reply to the last player who sent you a tell\n"
+                "• `!l <message>` — Speak in Linkshell"
+            )
+            return
+
+        if not raw_text or not target_player:
+            return
+
+        char_clean = char_name.lower()
+        if char_clean not in self.clients_by_char:
+            await message.reply(f"⚠️ Your character **{char_name}** is not currently online or connected to LSRelay.")
+            return
+
+        sanitized = sanitize_for_game(raw_text)
+        if not sanitized:
+            await message.reply("⚠️ Message contained only unsupported characters or was empty.")
+            return
+
+        chunks = split_message(sanitized, max_length=120)
+
+        for chunk in chunks:
+            self.record_discord_injection("tell", char_name, f"{target_player}:{chunk}")
+            sent = await self.send_to_character(char_name, {
+                "type": "inject_chat",
+                "mode": "tell",
+                "target": target_player,
+                "message": chunk
+            })
+            if not sent:
+                await message.reply(f"⚠️ Failed to deliver tell to {char_name}'s client.")
+                return
+
+        self.last_tell_by_user[user_id] = target_player
+        try:
+            await message.add_reaction("✅")
+        except Exception:
+            pass
+
 def create_bot(core):
     intents = discord.Intents.default()
     intents.message_content = True
@@ -622,6 +743,10 @@ def create_bot(core):
     async def on_message(message):
         if message.author.bot:
             return
+        if isinstance(message.channel, discord.DMChannel) or message.guild is None:
+            await core.process_dm_message(message)
+            return
+
         if not core.active_channel or message.channel.id != core.active_channel.id:
             return
 
