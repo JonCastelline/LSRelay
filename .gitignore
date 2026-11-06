@@ -1,0 +1,6 @@
+data/
+*.tmp
+__pycache__/
+*.pyc
+config.json
+.pytest_cache/

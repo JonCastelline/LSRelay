@@ -1,0 +1,11 @@
+{
+    "bot_token": "YOUR_DISCORD_BOT_TOKEN_HERE",
+    "channels": {
+        "Discord Server - linkshell-chat": 123456789012345678,
+        "Discord Server 2 - alt-chat": 987654321098765432
+    },
+    "linkshell_mode": "ls1",
+    "game_chat_format": "[{author}] {message}",
+    "tcp_host": "127.0.0.1",
+    "tcp_port": 45124
+}
