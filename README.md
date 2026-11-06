@@ -2,14 +2,14 @@
 
 A multi-tenant, bi-directional Linkshell relay between Final Fantasy XI (Windower 4) and Discord.
 
-Designed to run as a central **Hub & Spoke** service for an entire Linkshell or party. A single Discord bot runs on your server (or Raspberry Pi), while players run the lightweight Windower addon on their PCs.
+Designed to run as a central **Hub & Spoke** service for an entire Linkshell or party. A single Discord bot runs on your server, while players run the lightweight Windower addon on their PCs.
 
 ---
 
 ## Highlights
 
 - **Direct In-Game Speech**:
-  - When you type `!l <message>` in Discord, your message speaks **directly from your in-game character** into Linkshell with no awkward bot prefixes.
+  - When you type `!l <message>` in Discord, your message speaks **directly from your in-game character** into Linkshell.
   - When your friends type `!l <message>`, it speaks from **their** characters.
 - **One-Time Pairing (`//lsr link` & `!lslink`)**:
   - Friends don't need Discord developer accounts or bot tokens. They simply run `//lsr link` in FFXI and enter their 6-digit code in Discord.
@@ -28,7 +28,7 @@ Designed to run as a central **Hub & Spoke** service for an entire Linkshell or 
 
 ---
 
-## Hub Setup (Server / Raspberry Pi / PC)
+## Hub Setup (Server / PC)
 
 The Hub hosts the Discord bot and the TCP server for connecting game clients.
 
@@ -52,17 +52,23 @@ Copy `config.example.json` to `config.json`:
 
 - `bot_token`: Your Discord Bot Application token (requires `Message Content Intent` enabled in the Discord Developer Portal).
 - `channels`: Mapping of channel names to Channel IDs. If multiple channels are defined, you can pick one interactively or via CLI argument.
-- `linkshell_mode`: `"ls1"`, `"ls2"`, or `"both"`.
+- `linkshell_mode`: `"ls1"` (default), `"ls2"`, or `"both"`.
 - `tcp_host`: `"0.0.0.0"` to accept connections from local network or internet.
 - `tcp_port`: Default `45124`.
 
 ### 3. Run the Hub
-```bash
-python relay.py
-```
-*(Or specify the channel: `python relay.py "Main Server - ls-chat"`)*
 
-#### Running as a systemd Service (Raspberry Pi / Linux)
+#### Windows Setup
+You can run the Hub directly from PowerShell or Command Prompt:
+```powershell
+python relay.py
+# Or specify the channel name directly:
+python relay.py "Main Server - ls-chat"
+```
+
+To run continuously in the background on Windows, you can use Task Scheduler (trigger on user login, Action: `python.exe relay.py "Main Server - ls-chat"`) or run via a tool like [NSSM](https://nssm.cc/) to run as a native Windows service.
+
+#### Linux / systemd Setup
 Create `/etc/systemd/system/lsrelay.service`:
 ```ini
 [Unit]
@@ -123,12 +129,14 @@ Linkshell members only need the `LSRelay` Windower addon.
 | Command | Description |
 | :--- | :--- |
 | `!l <message>` | Speaks `<message>` into Linkshell 1 through your in-game character. |
-| `!l2 <message>` | Speaks `<message>` into Linkshell 2 through your in-game character. |
+| `!l2 <message>` | Speaks `<message>` into Linkshell 2 through your in-game character (only active if `linkshell_mode` is `"both"` or `"ls2"`). |
 | `!lslink <code>` | Links your Discord account to your character using a 6-digit code. |
 | `!lsunlink` | Removes your Discord account linkage. |
 | `!lswho` | Displays the directory of linked members and who is currently online in-game. |
 | `!lsstatus` | Displays Hub server and connection statistics. |
 | `!lsr mode <ls1\|ls2\|both>` | Switches the Hub's active Linkshell relay mode. |
+
+> **Note on Linkshell Targeting**: By default, `linkshell_mode` is set to `"ls1"` for your main Linkshell. In this mode, `!l2` is disabled and in-game LS2 chat is ignored. Support for a second Linkshell is strictly opt-in by configuring `"linkshell_mode": "both"` in `config.json` or switching dynamically with `!lsr mode both`.
 
 ### In-Game Addon Commands (`//lsr` or `//lsrelay`)
 
@@ -150,4 +158,4 @@ Run the automated test suite with Python 3.10+:
 ```bash
 python test_relay.py
 ```
-All 19 unit and integration tests cover pairing codes, targeted client routing, global deduplication, and connection lifecycle.
+All 21 unit and integration tests cover pairing codes, targeted client routing, global deduplication, and connection lifecycle.
