@@ -1,6 +1,6 @@
 _addon.name = 'LSRelay'
 _addon.author = 'Frodobald'
-_addon.version = '1.2.0'
+_addon.version = '1.2.1'
 _addon.commands = {'lsrelay', 'lsr'}
 
 require('strings')
@@ -221,10 +221,8 @@ local function handle_incoming_server_message(line)
     end
 
     if data.type == 'config' then
-        if data.linkshell_mode and data.linkshell_mode ~= settings.linkshell_mode then
-            settings.linkshell_mode = data.linkshell_mode:lower()
-            config.save(settings)
-            print_msg('Linkshell mode synced from Hub: ' .. settings.linkshell_mode:upper())
+        if settings.debug then
+            print_msg('Hub linkshell mode: ' .. tostring(data.linkshell_mode))
         end
     elseif data.type == 'pair_code' then
         local code = data.code or 'UNKNOWN'
@@ -308,7 +306,16 @@ local function process_chat_queue()
     end
 
     local item = table.remove(chat_queue, 1)
-    local prefix = (item.mode == 'ls2') and '/l2 ' or '/l '
+    local active_mode = settings.linkshell_mode:lower()
+    local use_ls2 = false
+    if active_mode == 'ls2' then
+        use_ls2 = true
+    elseif active_mode == 'ls1' then
+        use_ls2 = false
+    else
+        use_ls2 = (item.mode == 'ls2')
+    end
+    local prefix = use_ls2 and '/l2 ' or '/l '
     local cmd = prefix .. item.message
 
     windower.chat.input(cmd)
@@ -342,9 +349,15 @@ windower.register_event('chat message', function(message, sender, mode, gm)
         clean_msg = clean_msg:strip_format()
     end
 
+    -- If player specifically mapped the relay to their personal LS2 slot, report it as the primary mode
+    local report_mode = ls_mode
+    if active_mode == 'ls2' and ls_mode == 'ls2' then
+        report_mode = 'ls1'
+    end
+
     send_payload({
         type = 'chat',
-        mode = ls_mode,
+        mode = report_mode,
         sender = sender,
         message = clean_msg
     })
@@ -407,10 +420,9 @@ windower.register_event('addon command', function(command, ...)
         settings.linkshell_mode = new_mode
         config.save(settings)
         print_msg('Linkshell mode set to: ' .. new_mode:upper())
-        send_payload({
-            type = 'config',
-            linkshell_mode = new_mode
-        })
+        if new_mode == 'ls2' then
+            print_msg('(All Discord messages will be spoken via /l2 and incoming LS2 chat relayed)')
+        end
     elseif command == 'reconnect' then
         print_msg('Reconnecting to Hub...')
         try_connect()
