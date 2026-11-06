@@ -1,6 +1,6 @@
 _addon.name = 'LSRelay'
 _addon.author = 'Jon'
-_addon.version = '1.1.1'
+_addon.version = '1.1.3'
 _addon.commands = {'lsrelay', 'lsr'}
 
 require('strings')
@@ -24,7 +24,6 @@ local client = nil
 local is_connected = false
 local last_connect_attempt = 0
 local connect_retry_interval = 3.0
-local connect_timeout = 5.0
 local read_buffer = ""
 
 -- Queue for rate-limiting incoming Discord messages into FFXI chat
@@ -81,14 +80,42 @@ end
 -- Fast, robust, dependency-free JSON parser for incoming LSRelay messages
 local function parse_json_line(str)
     local res = {}
-    -- Strings: "key": "value"
-    for key, val in str:gmatch('"([%w_]+)"%s*:%s*"([^"]*)"') do
-        res[key] = val:gsub('\\"', '"'):gsub('\\\\', '\\')
-    end
-    -- Numbers: "key": 123
-    for key, val in str:gmatch('"([%w_]+)"%s*:%s*(%-?%d+%.?%d*)') do
-        if not res[key] then
-            res[key] = tonumber(val)
+    local pos = 1
+    local len = #str
+    while pos <= len do
+        local key_start, key_end, key = str:find('"([%w_]+)"%s*:%s*', pos)
+        if not key_start then break end
+        local val_start = key_end + 1
+        local first_char = str:sub(val_start, val_start)
+        if first_char == '"' then
+            local i = val_start + 1
+            local escaped = false
+            while i <= len do
+                local c = str:sub(i, i)
+                if c == '\\' and not escaped then
+                    escaped = true
+                elseif c == '"' and not escaped then
+                    break
+                else
+                    escaped = false
+                end
+                i = i + 1
+            end
+            local raw_val = str:sub(val_start + 1, i - 1)
+            res[key] = raw_val:gsub('\\"', '"'):gsub('\\\\', '\\'):gsub('\\n', '\n'):gsub('\\r', '\r'):gsub('\\t', '\t')
+            pos = i + 1
+        else
+            local num_str = str:match('^(%-?%d+%.?%d*)', val_start)
+            if num_str then
+                res[key] = tonumber(num_str)
+                pos = val_start + #num_str
+            else
+                local bool_str = str:match('^(%a+)', val_start)
+                if bool_str == 'true' then res[key] = true
+                elseif bool_str == 'false' then res[key] = false
+                end
+                pos = val_start + (bool_str and #bool_str or 1)
+            end
         end
     end
     return res
@@ -107,14 +134,19 @@ local function send_payload(payload)
         return false
     end
     local json_str = to_json(payload) .. '\n'
+    -- Small 50ms timeout ensures Windows socket send buffer accepts the bytes without freezing the frame
+    client:settimeout(0.05)
     local sent, err = client:send(json_str)
+    client:settimeout(0)
     if not sent then
-        if settings.debug then
+        if settings.debug or err ~= 'timeout' then
             print_error('Send failed: ' .. tostring(err))
         end
-        is_connected = false
-        pcall(function() client:close() end)
-        client = nil
+        if err == 'closed' then
+            is_connected = false
+            pcall(function() client:close() end)
+            client = nil
+        end
         return false
     end
     return true
@@ -146,11 +178,14 @@ local function try_connect()
         return
     end
 
-    sock:settimeout(0) -- Non-blocking
+    -- 50ms handshake timeout ensures clean connection on LAN without freezing game
+    sock:settimeout(0.05)
     local res, conn_err = sock:connect(settings.tcp_host, settings.tcp_port)
-    client = sock
 
     if res == 1 or conn_err == 'already connected' then
+        -- Set to 0 for completely non-blocking operations in the game frame loop
+        sock:settimeout(0)
+        client = sock
         is_connected = true
         print_msg('Connected to Hub at ' .. settings.tcp_host .. ':' .. settings.tcp_port)
         local player = windower.ffxi.get_player()
@@ -159,10 +194,10 @@ local function try_connect()
             player = player and player.name or 'Unknown',
             mode = settings.linkshell_mode
         })
-    elseif conn_err == 'timeout' or conn_err == 'operation already in progress' then
-        -- Connection will be verified in select loop
     else
-        disconnect()
+        sock:close()
+        client = nil
+        is_connected = false
     end
 end
 
@@ -208,40 +243,10 @@ local function handle_incoming_server_message(line)
 end
 
 local function poll_socket()
-    if not client then
+    if not client or not is_connected then
         if (os.clock() - last_connect_attempt) >= connect_retry_interval then
             try_connect()
         end
-        return
-    end
-
-    -- Check for connection timeout while pending connect
-    if not is_connected then
-        if (os.clock() - last_connect_attempt) > connect_timeout then
-            if settings.debug then
-                print_error('Connection attempt timed out.')
-            end
-            disconnect()
-            return
-        end
-
-        local _, sendt, err = socket.select(nil, {client}, 0)
-        if sendt and #sendt > 0 then
-            is_connected = true
-            print_msg('Connected to Hub at ' .. settings.tcp_host .. ':' .. settings.tcp_port)
-            local player = windower.ffxi.get_player()
-            send_payload({
-                type = 'hello',
-                player = player and player.name or 'Unknown',
-                mode = settings.linkshell_mode
-            })
-        elseif err and err ~= 'timeout' then
-            disconnect()
-            return
-        end
-    end
-
-    if not is_connected then
         return
     end
 
