@@ -25,6 +25,11 @@ A bi-directional Linkshell relay between Final Fantasy XI (Windower 4) and Disco
 ## Setup & Usage
 
 ### 1. Configure Discord Bot
+Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
 Copy `config.example.json` to `config.json`:
 ```json
 {
