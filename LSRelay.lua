@@ -1,6 +1,6 @@
 _addon.name = 'LSRelay'
 _addon.author = 'Jon'
-_addon.version = '1.0.0'
+_addon.version = '1.1.0'
 _addon.commands = {'lsrelay', 'lsr'}
 
 require('strings')
@@ -131,7 +131,7 @@ local function disconnect()
     if is_connected then
         is_connected = false
         if settings.debug then
-            print_msg('Disconnected from Python relay.')
+            print_msg('Disconnected from Hub.')
         end
     end
     read_buffer = ""
@@ -155,7 +155,7 @@ local function try_connect()
 
     if res == 1 or conn_err == 'already connected' then
         is_connected = true
-        print_msg('Connected to Discord relay at ' .. settings.tcp_host .. ':' .. settings.tcp_port)
+        print_msg('Connected to Hub at ' .. settings.tcp_host .. ':' .. settings.tcp_port)
         local player = windower.ffxi.get_player()
         send_payload({
             type = 'hello',
@@ -180,14 +180,22 @@ local function handle_incoming_server_message(line)
         if data.linkshell_mode and data.linkshell_mode ~= settings.linkshell_mode then
             settings.linkshell_mode = data.linkshell_mode:lower()
             config.save(settings)
-            print_msg('Linkshell mode synced from relay: ' .. settings.linkshell_mode:upper())
+            print_msg('Linkshell mode synced from Hub: ' .. settings.linkshell_mode:upper())
         end
+    elseif data.type == 'pair_code' then
+        local code = data.code or 'UNKNOWN'
+        local expires = data.expires_in or 300
+        windower.add_to_chat(200, '--------------------------------------------------')
+        windower.add_to_chat(200, '[LSRelay] Your Discord pairing code is: ' .. code)
+        windower.add_to_chat(200, '[LSRelay] In Discord, type: !lslink ' .. code)
+        windower.add_to_chat(200, '[LSRelay] (Code expires in ' .. math.floor(expires / 60) .. ' minutes)')
+        windower.add_to_chat(200, '--------------------------------------------------')
     elseif data.type == 'inject_chat' then
         local mode = (data.mode or 'ls1'):lower()
         local msg = data.message or ''
         if msg ~= '' then
             if #chat_queue >= max_queue_size then
-                table.remove(chat_queue, 1) -- Drop oldest to prevent queue explosion
+                table.remove(chat_queue, 1)
             end
             table.insert(chat_queue, {
                 mode = mode,
@@ -218,11 +226,10 @@ local function poll_socket()
             return
         end
 
-        -- Check if non-blocking connect has completed
         local _, sendt, err = socket.select(nil, {client}, 0)
         if sendt and #sendt > 0 then
             is_connected = true
-            print_msg('Connected to Discord relay at ' .. settings.tcp_host .. ':' .. settings.tcp_port)
+            print_msg('Connected to Hub at ' .. settings.tcp_host .. ':' .. settings.tcp_port)
             local player = windower.ffxi.get_player()
             send_payload({
                 type = 'hello',
@@ -239,7 +246,7 @@ local function poll_socket()
         return
     end
 
-    -- Read data from server with proper stream buffering for fragmented TCP packets
+    -- Read data from server with proper stream buffering
     while true do
         local chunk, err, partial = client:receive(4096)
         local data = chunk or partial
@@ -256,7 +263,7 @@ local function poll_socket()
 
         if not chunk then
             if err == 'closed' then
-                print_msg('Discord relay disconnected.')
+                print_msg('Hub disconnected.')
                 disconnect()
             end
             break
@@ -269,7 +276,6 @@ local function process_chat_queue()
         return
     end
 
-    -- Guard: Only inject chat if logged into the game world and not zoning
     local info = windower.ffxi.get_info()
     if not info or not info.logged_in or info.zone == 0 then
         return
@@ -305,7 +311,6 @@ windower.register_event('chat message', function(message, sender, mode, gm)
         return
     end
 
-    -- Mode filter
     local active_mode = settings.linkshell_mode:lower()
     if active_mode ~= 'both' and active_mode ~= ls_mode then
         return
@@ -330,10 +335,48 @@ windower.register_event('addon command', function(command, ...)
     command = (command or 'status'):lower()
 
     if command == 'status' then
+        local player = windower.ffxi.get_player()
         print_msg('Status:')
-        print_msg('  Connection: ' .. (is_connected and ('Connected (' .. settings.tcp_host .. ':' .. settings.tcp_port .. ')') or 'Disconnected'))
+        print_msg('  Character: ' .. (player and player.name or 'Unknown'))
+        print_msg('  Hub Server: ' .. settings.tcp_host .. ':' .. settings.tcp_port)
+        print_msg('  Connection: ' .. (is_connected and 'Connected' or 'Disconnected'))
         print_msg('  Linkshell Mode: ' .. settings.linkshell_mode:upper())
         print_msg('  Queued Messages: ' .. tostring(#chat_queue))
+    elseif command == 'link' then
+        if not is_connected then
+            print_error('Not connected to LSRelay Hub. Type //lsr reconnect or check host.')
+            return
+        end
+        local player = windower.ffxi.get_player()
+        if not player or not player.name then
+            print_error('Unable to determine character name. Please ensure you are logged into FFXI.')
+            return
+        end
+        print_msg('Requesting pairing code for ' .. player.name .. '...')
+        send_payload({
+            type = 'request_pair_code',
+            player = player.name
+        })
+    elseif command == 'host' then
+        local new_host = args[1]
+        if not new_host or new_host == '' then
+            print_error('Usage: //lsr host <ip-or-domain>')
+            return
+        end
+        settings.tcp_host = new_host
+        config.save(settings)
+        print_msg('Hub host set to: ' .. new_host .. '. Reconnecting...')
+        try_connect()
+    elseif command == 'port' then
+        local new_port = tonumber(args[1])
+        if not new_port or new_port <= 0 or new_port > 65535 then
+            print_error('Usage: //lsr port <number>')
+            return
+        end
+        settings.tcp_port = new_port
+        config.save(settings)
+        print_msg('Hub port set to: ' .. tostring(new_port) .. '. Reconnecting...')
+        try_connect()
     elseif command == 'mode' then
         local new_mode = args[1] and args[1]:lower()
         if new_mode ~= 'ls1' and new_mode ~= 'ls2' and new_mode ~= 'both' then
@@ -348,7 +391,7 @@ windower.register_event('addon command', function(command, ...)
             linkshell_mode = new_mode
         })
     elseif command == 'reconnect' then
-        print_msg('Reconnecting to relay...')
+        print_msg('Reconnecting to Hub...')
         try_connect()
     elseif command == 'debug' then
         settings.debug = not settings.debug
@@ -356,15 +399,31 @@ windower.register_event('addon command', function(command, ...)
         print_msg('Debug mode: ' .. (settings.debug and 'ON' or 'OFF'))
     else
         print_msg('Commands:')
-        print_msg('  //lsr status - View relay connection status and mode')
+        print_msg('  //lsr link - Request a 6-digit code to link your Discord account')
+        print_msg('  //lsr status - View Hub connection status and settings')
+        print_msg('  //lsr host <host> - Set Hub IP or domain')
+        print_msg('  //lsr port <port> - Set Hub TCP port')
         print_msg('  //lsr mode <ls1|ls2|both> - Set active linkshell')
-        print_msg('  //lsr reconnect - Force reconnect to Python relay')
+        print_msg('  //lsr reconnect - Force reconnect to Hub')
         print_msg('  //lsr debug - Toggle debug output')
     end
 end)
 
 windower.register_event('load', function()
     try_connect()
+end)
+
+windower.register_event('login', function(name)
+    if is_connected then
+        local player_name = name or (windower.ffxi.get_player() and windower.ffxi.get_player().name) or 'Unknown'
+        send_payload({
+            type = 'hello',
+            player = player_name,
+            mode = settings.linkshell_mode
+        })
+    else
+        try_connect()
+    end
 end)
 
 windower.register_event('unload', function()
