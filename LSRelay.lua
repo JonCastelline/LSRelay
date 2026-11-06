@@ -1,5 +1,5 @@
 _addon.name = 'LSRelay'
-_addon.author = 'Jon'
+_addon.author = 'Frodobald'
 _addon.version = '1.2.0'
 _addon.commands = {'lsrelay', 'lsr'}
 
