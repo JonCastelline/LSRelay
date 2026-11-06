@@ -1,6 +1,6 @@
 _addon.name = 'LSRelay'
 _addon.author = 'Jon'
-_addon.version = '1.1.0'
+_addon.version = '1.1.1'
 _addon.commands = {'lsrelay', 'lsr'}
 
 require('strings')
@@ -37,7 +37,6 @@ local chat_delay = 0.6 -- 600ms between injected chat lines to prevent drop/kick
 local function to_json(val)
     local t = type(val)
     if t == 'string' then
-        -- Escape backslashes, quotes, and control characters (RFC 8259)
         local escaped = val:gsub('\\', '\\\\'):gsub('"', '\\"'):gsub('[\x00-\x1f]', function(c)
             if c == '\n' then return '\\n'
             elseif c == '\r' then return '\\r'
@@ -79,20 +78,18 @@ local function to_json(val)
     end
 end
 
--- Fast, robust JSON parser for incoming LSRelay messages
+-- Fast, robust, dependency-free JSON parser for incoming LSRelay messages
 local function parse_json_line(str)
-    -- Try Windower's json library if available
-    local ok, json = pcall(require, 'json')
-    if ok and json and json.parse then
-        local parsed = json.parse(str)
-        if parsed then return parsed end
-    end
-
-    -- Fallback parser for standard string fields handling escaped quotes
     local res = {}
-    local pattern = '"([%w_]+)"%s*:%s*"(.-)"[%,%}]'
-    for key, val in str:gmatch(pattern) do
+    -- Strings: "key": "value"
+    for key, val in str:gmatch('"([%w_]+)"%s*:%s*"([^"]*)"') do
         res[key] = val:gsub('\\"', '"'):gsub('\\\\', '\\')
+    end
+    -- Numbers: "key": 123
+    for key, val in str:gmatch('"([%w_]+)"%s*:%s*(%-?%d+%.?%d*)') do
+        if not res[key] then
+            res[key] = tonumber(val)
+        end
     end
     return res
 end
@@ -165,12 +162,14 @@ local function try_connect()
     elseif conn_err == 'timeout' or conn_err == 'operation already in progress' then
         -- Connection will be verified in select loop
     else
-        -- Refused or immediate error
         disconnect()
     end
 end
 
 local function handle_incoming_server_message(line)
+    if settings.debug then
+        print_msg('Received: ' .. line)
+    end
     local data = parse_json_line(line)
     if not data or not data.type then
         return
@@ -184,7 +183,7 @@ local function handle_incoming_server_message(line)
         end
     elseif data.type == 'pair_code' then
         local code = data.code or 'UNKNOWN'
-        local expires = data.expires_in or 300
+        local expires = tonumber(data.expires_in) or 300
         windower.add_to_chat(200, '--------------------------------------------------')
         windower.add_to_chat(200, '[LSRelay] Your Discord pairing code is: ' .. code)
         windower.add_to_chat(200, '[LSRelay] In Discord, type: !lslink ' .. code)
@@ -246,22 +245,29 @@ local function poll_socket()
         return
     end
 
-    -- Read data from server with proper stream buffering
+    -- Read data from server line by line
     while true do
-        local chunk, err, partial = client:receive(4096)
-        local data = chunk or partial
-        if data and #data > 0 then
-            read_buffer = read_buffer .. data
-            while true do
-                local nl_pos = read_buffer:find('\n')
-                if not nl_pos then break end
-                local line = read_buffer:sub(1, nl_pos - 1):gsub('\r$', '')
-                read_buffer = read_buffer:sub(nl_pos + 1)
-                handle_incoming_server_message(line)
+        local line, err, partial = client:receive('*l')
+        local full_line = nil
+        if line then
+            if read_buffer ~= "" then
+                full_line = read_buffer .. line
+                read_buffer = ""
+            else
+                full_line = line
+            end
+        elseif partial and #partial > 0 then
+            read_buffer = read_buffer .. partial
+            local nl = read_buffer:find('\n')
+            if nl then
+                full_line = read_buffer:sub(1, nl - 1)
+                read_buffer = read_buffer:sub(nl + 1)
             end
         end
 
-        if not chunk then
+        if full_line then
+            handle_incoming_server_message(full_line:gsub('\r$', ''))
+        else
             if err == 'closed' then
                 print_msg('Hub disconnected.')
                 disconnect()
@@ -399,7 +405,7 @@ windower.register_event('addon command', function(command, ...)
         print_msg('Debug mode: ' .. (settings.debug and 'ON' or 'OFF'))
     else
         print_msg('Commands:')
-        print_msg('  //lsr link - Request a 6-digit code to link your Discord account')
+        print_msg('  //lsr link - Request a 5-minute pairing code to link with Discord')
         print_msg('  //lsr status - View Hub connection status and settings')
         print_msg('  //lsr host <host> - Set Hub IP or domain')
         print_msg('  //lsr port <port> - Set Hub TCP port')
