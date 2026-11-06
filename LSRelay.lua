@@ -36,12 +36,11 @@ local chat_delay = 0.6 -- 600ms between injected chat lines to prevent drop/kick
 local function to_json(val)
     local t = type(val)
     if t == 'string' then
-        local escaped = val:gsub('\\', '\\\\'):gsub('"', '\\"'):gsub('[\x00-\x1f]', function(c)
-            if c == '\n' then return '\\n'
-            elseif c == '\r' then return '\\r'
-            elseif c == '\t' then return '\\t'
-            else return '' end
-        end)
+        local escaped = val:gsub('\\', '\\\\')
+                           :gsub('"', '\\"')
+                           :gsub('\n', '\\n')
+                           :gsub('\r', '\\r')
+                           :gsub('\t', '\\t')
         return '"' .. escaped .. '"'
     elseif t == 'number' or t == 'boolean' then
         return tostring(val)
