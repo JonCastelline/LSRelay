@@ -442,11 +442,13 @@ class RelayCore:
                 data = await reader.read(4096)
                 if not data:
                     break
+                print(f"[TCP RAW] Received {len(data)} bytes from {addr}: {data}")
                 buffer += data.decode('utf-8', errors='replace')
                 while '\n' in buffer:
                     line, buffer = buffer.split('\n', 1)
                     line = line.strip()
                     if line:
+                        print(f"[TCP LINE] From {addr}: {line}")
                         try:
                             await self.process_game_message(line, writer)
                         except Exception as msg_err:
@@ -467,6 +469,7 @@ class RelayCore:
             return
 
         msg_type = payload.get('type')
+        print(f"[TCP MSG] Parsed type='{msg_type}' from {writer.get_extra_info('peername')}")
         if msg_type == 'hello':
             player = payload.get('player', 'Unknown')
             if player and player != 'Unknown':

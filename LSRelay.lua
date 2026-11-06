@@ -1,6 +1,6 @@
 _addon.name = 'LSRelay'
 _addon.author = 'Jon'
-_addon.version = '1.1.3'
+_addon.version = '1.1.4'
 _addon.commands = {'lsrelay', 'lsr'}
 
 require('strings')
@@ -14,7 +14,7 @@ local defaults = {
     tcp_host = '127.0.0.1',
     tcp_port = 45124,
     linkshell_mode = 'ls1', -- 'ls1', 'ls2', or 'both'
-    debug = false
+    debug = true
 }
 
 local settings = config.load(defaults)
@@ -105,12 +105,13 @@ local function parse_json_line(str)
             res[key] = raw_val:gsub('\\"', '"'):gsub('\\\\', '\\'):gsub('\\n', '\n'):gsub('\\r', '\r'):gsub('\\t', '\t')
             pos = i + 1
         else
-            local num_str = str:match('^(%-?%d+%.?%d*)', val_start)
+            local tail = str:sub(val_start)
+            local num_str = tail:match('^(%-?%d+%.?%d*)')
             if num_str then
                 res[key] = tonumber(num_str)
                 pos = val_start + #num_str
             else
-                local bool_str = str:match('^(%a+)', val_start)
+                local bool_str = tail:match('^(%a+)')
                 if bool_str == 'true' then res[key] = true
                 elseif bool_str == 'false' then res[key] = false
                 end
@@ -131,16 +132,18 @@ end
 
 local function send_payload(payload)
     if not client or not is_connected then
-        if settings.debug then
-            print_error('Cannot send payload: not connected to Hub.')
-        end
+        print_error('[DEBUG] Cannot send: socket not connected (is_connected=' .. tostring(is_connected) .. ')')
         return false
     end
     local json_str = to_json(payload) .. '\n'
-    -- Small 50ms timeout ensures Windows socket send buffer accepts the bytes without freezing the frame
-    client:settimeout(0.05)
+    print_msg('[DEBUG] Sending: ' .. json_str:gsub('\n', ''))
+    
+    -- Give send a 100ms window so it never drops on Windows sockets
+    client:settimeout(0.1)
     local sent, err = client:send(json_str)
     client:settimeout(0)
+    print_msg('[DEBUG] send result: sent=' .. tostring(sent) .. ', err=' .. tostring(err))
+    
     if not sent then
         print_error('Send failed: ' .. tostring(err))
         if err == 'closed' then
@@ -149,9 +152,6 @@ local function send_payload(payload)
             client = nil
         end
         return false
-    end
-    if settings.debug then
-        print_msg('Sent: ' .. json_str:gsub('\n', ''))
     end
     return true
 end
@@ -163,9 +163,7 @@ local function disconnect()
     end
     if is_connected then
         is_connected = false
-        if settings.debug then
-            print_msg('Disconnected from Hub.')
-        end
+        print_msg('[DEBUG] Disconnected from Hub.')
     end
     read_buffer = ""
 end
@@ -174,31 +172,33 @@ local function try_connect()
     disconnect()
     last_connect_attempt = os.clock()
 
+    print_msg('[DEBUG] Connecting to Hub at ' .. settings.tcp_host .. ':' .. settings.tcp_port .. '...')
     local sock, err = socket.tcp()
     if not sock then
-        if settings.debug then
-            print_error('Failed to create socket: ' .. tostring(err))
-        end
+        print_error('Failed to create socket: ' .. tostring(err))
         return
     end
 
-    -- 50ms handshake timeout ensures clean connection on LAN without freezing game
-    sock:settimeout(0.05)
+    sock:setoption('tcp-nodelay', true)
+    sock:settimeout(0.5)
     local res, conn_err = sock:connect(settings.tcp_host, settings.tcp_port)
+    print_msg('[DEBUG] connect result: res=' .. tostring(res) .. ', conn_err=' .. tostring(conn_err))
 
     if res == 1 or conn_err == 'already connected' then
-        -- Set to 0 for completely non-blocking operations in the game frame loop
         sock:settimeout(0)
         client = sock
         is_connected = true
         print_msg('Connected to Hub at ' .. settings.tcp_host .. ':' .. settings.tcp_port)
         local player = windower.ffxi.get_player()
+        local player_name = player and player.name or 'Unknown'
+        print_msg('[DEBUG] Sending hello for: ' .. player_name)
         send_payload({
             type = 'hello',
-            player = player and player.name or 'Unknown',
+            player = player_name,
             mode = settings.linkshell_mode
         })
     else
+        print_error('[DEBUG] Failed to connect: ' .. tostring(conn_err))
         sock:close()
         client = nil
         is_connected = false
@@ -206,10 +206,9 @@ local function try_connect()
 end
 
 local function handle_incoming_server_message(line)
-    if settings.debug then
-        print_msg('Received: ' .. line)
-    end
+    print_msg('[DEBUG] Received server line: ' .. line)
     local data = parse_json_line(line)
+    print_msg('[DEBUG] Parsed type: ' .. tostring(data and data.type))
     if not data or not data.type then
         return
     end
@@ -239,9 +238,7 @@ local function handle_incoming_server_message(line)
                 mode = mode,
                 message = msg
             })
-            if settings.debug then
-                print_msg('Queued chat for ' .. mode:upper() .. ': ' .. msg)
-            end
+            print_msg('Queued chat for ' .. mode:upper() .. ': ' .. msg)
         end
     end
 end
