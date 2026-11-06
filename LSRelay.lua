@@ -131,6 +131,9 @@ end
 
 local function send_payload(payload)
     if not client or not is_connected then
+        if settings.debug then
+            print_error('Cannot send payload: not connected to Hub.')
+        end
         return false
     end
     local json_str = to_json(payload) .. '\n'
@@ -139,15 +142,16 @@ local function send_payload(payload)
     local sent, err = client:send(json_str)
     client:settimeout(0)
     if not sent then
-        if settings.debug or err ~= 'timeout' then
-            print_error('Send failed: ' .. tostring(err))
-        end
+        print_error('Send failed: ' .. tostring(err))
         if err == 'closed' then
             is_connected = false
             pcall(function() client:close() end)
             client = nil
         end
         return false
+    end
+    if settings.debug then
+        print_msg('Sent: ' .. json_str:gsub('\n', ''))
     end
     return true
 end
