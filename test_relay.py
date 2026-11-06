@@ -443,5 +443,26 @@ class TestRelayCoreMultiTenant(unittest.IsolatedAsyncioTestCase):
         mock_msg.reply.assert_awaited_once()
         self.assertIn("No recent tell sender", mock_msg.reply.call_args[0][0])
 
+    async def test_process_dm_message_multi_space(self):
+        code = self.pm.generate_code("JonChar")
+        self.pm.claim_code(code, 111111)
+
+        mock_writer = MagicMock()
+        mock_writer.drain = AsyncMock()
+        self.core.register_client(mock_writer, "JonChar")
+
+        mock_msg = MagicMock()
+        mock_msg.clean_content = "!t   Bob   Hello   there"
+        mock_msg.author.id = 111111
+        mock_msg.reply = AsyncMock()
+        mock_msg.add_reaction = AsyncMock()
+
+        await self.core.process_dm_message(mock_msg)
+        mock_writer.write.assert_called_once()
+        written = json.loads(mock_writer.write.call_args[0][0].decode('utf-8'))
+        self.assertEqual(written["target"], "Bob")
+        self.assertEqual(written["message"], "Hello there")
+        self.assertEqual(self.core.last_tell_by_user[111111], "Bob")
+
 if __name__ == '__main__':
     unittest.main()

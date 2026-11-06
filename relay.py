@@ -657,7 +657,7 @@ class RelayCore:
         raw_text = None
 
         if content.startswith(('!t ', '!tell ')):
-            parts = content.split(' ', 2)
+            parts = content.split(None, 2)
             if len(parts) >= 3:
                 target_player = parts[1].strip()
                 raw_text = parts[2].strip()
@@ -669,7 +669,8 @@ class RelayCore:
             if not target_player:
                 await message.reply("⚠️ No recent tell sender to reply to. Use `!t <PlayerName> <message>`.")
                 return
-            raw_text = content.split(' ', 1)[1].strip()
+            parts = content.split(None, 1)
+            raw_text = parts[1].strip() if len(parts) > 1 else ""
         elif content in ('!t', '!tell'):
             await message.reply("Usage: `!t <PlayerName> <message>`")
             return
