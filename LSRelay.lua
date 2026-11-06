@@ -5,6 +5,7 @@ _addon.commands = {'lsrelay', 'lsr'}
 
 require('strings')
 require('tables')
+require('chat')
 local config = require('config')
 local socket = require('socket')
 
@@ -23,18 +24,27 @@ local client = nil
 local is_connected = false
 local last_connect_attempt = 0
 local connect_retry_interval = 3.0
+local connect_timeout = 5.0
 local read_buffer = ""
 
 -- Queue for rate-limiting incoming Discord messages into FFXI chat
 local chat_queue = {}
+local max_queue_size = 20
 local last_chat_time = 0
 local chat_delay = 0.6 -- 600ms between injected chat lines to prevent drop/kick
 
--- Fallback JSON stringifier
+-- Fallback JSON stringifier with control code escaping
 local function to_json(val)
     local t = type(val)
     if t == 'string' then
-        return '"' .. val:gsub('\\', '\\\\'):gsub('"', '\\"'):gsub('\n', '\\n'):gsub('\r', '\\r') .. '"'
+        -- Escape backslashes, quotes, and control characters (RFC 8259)
+        local escaped = val:gsub('\\', '\\\\'):gsub('"', '\\"'):gsub('[\x00-\x1f]', function(c)
+            if c == '\n' then return '\\n'
+            elseif c == '\r' then return '\\r'
+            elseif c == '\t' then return '\\t'
+            else return '' end
+        end)
+        return '"' .. escaped .. '"'
     elseif t == 'number' or t == 'boolean' then
         return tostring(val)
     elseif t == 'nil' then
@@ -69,7 +79,7 @@ local function to_json(val)
     end
 end
 
--- Fast, robust JSON parser for expected LSRelay messages
+-- Fast, robust JSON parser for incoming LSRelay messages
 local function parse_json_line(str)
     -- Try Windower's json library if available
     local ok, json = pcall(require, 'json')
@@ -78,10 +88,11 @@ local function parse_json_line(str)
         if parsed then return parsed end
     end
 
-    -- Fallback parser for standard string fields
+    -- Fallback parser for standard string fields handling escaped quotes
     local res = {}
-    for key, val in str:gmatch('"([%w_]+)"%s*:%s*"([^"]*)"') do
-        res[key] = val
+    local pattern = '"([%w_]+)"%s*:%s*"(.-)"[%,%}]'
+    for key, val in str:gmatch(pattern) do
+        res[key] = val:gsub('\\"', '"'):gsub('\\\\', '\\')
     end
     return res
 end
@@ -145,7 +156,6 @@ local function try_connect()
     if res == 1 or conn_err == 'already connected' then
         is_connected = true
         print_msg('Connected to Discord relay at ' .. settings.tcp_host .. ':' .. settings.tcp_port)
-        -- Send greeting
         local player = windower.ffxi.get_player()
         send_payload({
             type = 'hello',
@@ -176,6 +186,9 @@ local function handle_incoming_server_message(line)
         local mode = (data.mode or 'ls1'):lower()
         local msg = data.message or ''
         if msg ~= '' then
+            if #chat_queue >= max_queue_size then
+                table.remove(chat_queue, 1) -- Drop oldest to prevent queue explosion
+            end
             table.insert(chat_queue, {
                 mode = mode,
                 message = msg
@@ -195,7 +208,16 @@ local function poll_socket()
         return
     end
 
+    -- Check for connection timeout while pending connect
     if not is_connected then
+        if (os.clock() - last_connect_attempt) > connect_timeout then
+            if settings.debug then
+                print_error('Connection attempt timed out.')
+            end
+            disconnect()
+            return
+        end
+
         -- Check if non-blocking connect has completed
         local _, sendt, err = socket.select(nil, {client}, 0)
         if sendt and #sendt > 0 then
@@ -217,12 +239,22 @@ local function poll_socket()
         return
     end
 
-    -- Read data from server non-blocking
+    -- Read data from server with proper stream buffering for fragmented TCP packets
     while true do
-        local chunk, err, partial = client:receive('*l')
-        if chunk then
-            handle_incoming_server_message(chunk)
-        else
+        local chunk, err, partial = client:receive(4096)
+        local data = chunk or partial
+        if data and #data > 0 then
+            read_buffer = read_buffer .. data
+            while true do
+                local nl_pos = read_buffer:find('\n')
+                if not nl_pos then break end
+                local line = read_buffer:sub(1, nl_pos - 1):gsub('\r$', '')
+                read_buffer = read_buffer:sub(nl_pos + 1)
+                handle_incoming_server_message(line)
+            end
+        end
+
+        if not chunk then
             if err == 'closed' then
                 print_msg('Discord relay disconnected.')
                 disconnect()
@@ -234,6 +266,12 @@ end
 
 local function process_chat_queue()
     if #chat_queue == 0 then
+        return
+    end
+
+    -- Guard: Only inject chat if logged into the game world and not zoning
+    local info = windower.ffxi.get_info()
+    if not info or not info.logged_in or info.zone == 0 then
         return
     end
 

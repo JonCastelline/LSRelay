@@ -3,6 +3,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import time
 import json
 import asyncio
+import io
+import discord
 
 from relay import (
     strip_json_comments,
@@ -79,14 +81,14 @@ class TestLSRelayHelpers(unittest.TestCase):
 
     def test_select_channel_interactive(self):
         channels = {"A": 10, "B": 20}
-        with patch('builtins.input', return_value="2"):
+        with patch('sys.stdout', new=io.StringIO()):
             name, cid = select_channel(channels, input_func=lambda _: "2")
             self.assertEqual(name, "B")
             self.assertEqual(cid, 20)
 
     def test_sanitize_for_game(self):
-        # Emojis stripped
-        text_with_emoji = "Hello world! 🔥🎉🚀"
+        # Emojis (both astral and BMP) stripped
+        text_with_emoji = "Hello world! 🔥🎉🚀 ☀️❤️⭐"
         sanitized = sanitize_for_game(text_with_emoji)
         self.assertEqual(sanitized, "Hello world!")
 
@@ -152,19 +154,31 @@ class TestRelayCore(unittest.IsolatedAsyncioTestCase):
             "tcp_port": 45124
         }
         self.core = RelayCore(self.config)
+        self.core.game_player_name = "Jon"
 
     def test_deduplication(self):
-        self.core.record_discord_injection("ls1", "Hello game!")
-        self.assertTrue(self.core.is_recent_discord_injection("ls1", "Hello game!"))
+        self.core.record_discord_injection("ls1", "[Jon] Hello game!")
+        
+        # Another player saying the same message is NOT treated as an echo
+        self.assertFalse(self.core.consume_discord_echo("ls1", "OtherPlayer", "[Jon] Hello game!"))
+        
         # Different mode
-        self.assertFalse(self.core.is_recent_discord_injection("ls2", "Hello game!"))
+        self.assertFalse(self.core.consume_discord_echo("ls2", "Jon", "[Jon] Hello game!"))
+        
         # Different text
-        self.assertFalse(self.core.is_recent_discord_injection("ls1", "Different text"))
+        self.assertFalse(self.core.consume_discord_echo("ls1", "Jon", "Different text"))
+
+        # Our own character saying it -> MATCH and CONSUME
+        self.assertTrue(self.core.consume_discord_echo("ls1", "Jon", "[Jon] Hello game!"))
+        
+        # Second time -> already consumed, returns False
+        self.assertFalse(self.core.consume_discord_echo("ls1", "Jon", "[Jon] Hello game!"))
 
         # Pruning check after dedup window
+        self.core.record_discord_injection("ls1", "[Jon] Expire test")
         self.core.dedup_window = 0.01
         time.sleep(0.02)
-        self.assertFalse(self.core.is_recent_discord_injection("ls1", "Hello game!"))
+        self.assertFalse(self.core.consume_discord_echo("ls1", "Jon", "[Jon] Expire test"))
 
     async def test_process_game_message_relayed_to_discord(self):
         mock_channel = AsyncMock()
@@ -178,7 +192,9 @@ class TestRelayCore(unittest.IsolatedAsyncioTestCase):
             "message": "Heading to Reisenjima!"
         })
         await self.core.process_game_message(game_line)
-        mock_channel.send.assert_awaited_once_with("**[LS] Frodobald:** Heading to Reisenjima!")
+        self.assertEqual(mock_channel.send.call_count, 1)
+        self.assertEqual(mock_channel.send.call_args[0][0], "**[LS] Frodobald:** Heading to Reisenjima!")
+        self.assertIsNotNone(mock_channel.send.call_args[1].get('allowed_mentions'))
 
     async def test_process_game_message_mode_both(self):
         self.core.linkshell_mode = "both"
@@ -192,7 +208,9 @@ class TestRelayCore(unittest.IsolatedAsyncioTestCase):
             "message": "Dynamis tonight?"
         })
         await self.core.process_game_message(game_line)
-        mock_channel.send.assert_awaited_once_with("**[LS2] Teejay:** Dynamis tonight?")
+        self.assertEqual(mock_channel.send.call_count, 1)
+        self.assertEqual(mock_channel.send.call_args[0][0], "**[LS2] Teejay:** Dynamis tonight?")
+        self.assertIsNotNone(mock_channel.send.call_args[1].get('allowed_mentions'))
 
     async def test_process_game_message_dedup_suppression(self):
         mock_channel = AsyncMock()
@@ -201,7 +219,7 @@ class TestRelayCore(unittest.IsolatedAsyncioTestCase):
         # Record Discord injection
         self.core.record_discord_injection("ls1", "[Jon] Be right there")
 
-        # Game echoes the exact message back
+        # Game echoes our own character's exact message back
         game_line = json.dumps({
             "type": "chat",
             "mode": "ls1",
@@ -214,7 +232,7 @@ class TestRelayCore(unittest.IsolatedAsyncioTestCase):
 
     async def test_process_discord_message_success(self):
         mock_msg = MagicMock()
-        mock_msg.content = "!l Ready to pull!"
+        mock_msg.clean_content = "!l Ready to pull!"
         mock_msg.author.display_name = "Jon"
         mock_msg.reply = AsyncMock()
         mock_msg.add_reaction = AsyncMock()
@@ -237,30 +255,45 @@ class TestRelayCore(unittest.IsolatedAsyncioTestCase):
         mock_msg.add_reaction.assert_awaited_once_with("✅")
 
     async def test_process_discord_message_wrong_mode(self):
-        # Configured for ls1 only
         mock_msg = MagicMock()
-        mock_msg.content = "!l2 Test on ls2"
+        mock_msg.clean_content = "!l2 Test on ls2"
         mock_msg.reply = AsyncMock()
 
         await self.core.process_discord_message(mock_msg)
         mock_msg.reply.assert_awaited_once()
         self.assertIn("Linkshell `LS2` is not active", mock_msg.reply.call_args[0][0])
 
+    async def test_process_discord_message_ignored_commands(self):
+        mock_msg = MagicMock()
+        # Words starting with !l that are not relay commands
+        mock_msg.clean_content = "!leaderboard"
+        mock_msg.reply = AsyncMock()
+
+        await self.core.process_discord_message(mock_msg)
+        mock_msg.reply.assert_not_awaited()
+
     async def test_tcp_server_client_integration(self):
-        # Test full TCP connection, handshake, and two-way messaging
         server = await asyncio.start_server(self.core.handle_tcp_client, "127.0.0.1", 0)
         port = server.sockets[0].getsockname()[1]
 
         async with server:
             reader, writer = await asyncio.open_connection("127.0.0.1", port)
 
-            # Receive initial config from server
             line = await reader.readline()
             init_cfg = json.loads(line.decode('utf-8'))
             self.assertEqual(init_cfg["type"], "config")
             self.assertEqual(init_cfg["linkshell_mode"], "ls1")
 
-            # Game client sends chat to server
+            hello_payload = {
+                "type": "hello",
+                "player": "Jon",
+                "mode": "ls1"
+            }
+            writer.write((json.dumps(hello_payload) + '\n').encode('utf-8'))
+            await writer.drain()
+            await asyncio.sleep(0.02)
+            self.assertEqual(self.core.game_player_name, "Jon")
+
             mock_channel = AsyncMock()
             self.core.active_channel = mock_channel
 
@@ -273,11 +306,11 @@ class TestRelayCore(unittest.IsolatedAsyncioTestCase):
             writer.write((json.dumps(chat_payload) + '\n').encode('utf-8'))
             await writer.drain()
 
-            # Wait briefly for server processing
             await asyncio.sleep(0.05)
-            mock_channel.send.assert_awaited_once_with("**[LS] Jon:** Hello from TCP!")
+            self.assertEqual(mock_channel.send.call_count, 1)
+            self.assertEqual(mock_channel.send.call_args[0][0], "**[LS] Jon:** Hello from TCP!")
+            self.assertIsNotNone(mock_channel.send.call_args[1].get('allowed_mentions'))
 
-            # Server broadcasts chat injection to client
             broadcast_ok = await self.core.broadcast_to_game({
                 "type": "inject_chat",
                 "mode": "ls1",
@@ -291,8 +324,10 @@ class TestRelayCore(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(inject_data["message"], "[DiscordUser] Greetings!")
 
             writer.close()
-            await writer.wait_closed()
-
+            try:
+                await asyncio.wait_for(writer.wait_closed(), timeout=1.0)
+            except Exception:
+                pass
 
 if __name__ == '__main__':
     unittest.main()

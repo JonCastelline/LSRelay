@@ -147,18 +147,15 @@ def select_channel(channels, cli_arg=None, input_func=input):
 
 def sanitize_for_game(text):
     """Sanitizes text for FFXI chat:
-    - Strips emojis and unsupported non-ASCII/control characters
-    - Normalizes newlines and extra spaces
+    - Normalizes newlines and whitespace
+    - Strips all non-printable ASCII and emojis (BMP and astral plane)
     """
     if not text:
         return ""
     # Replace newlines/tabs with spaces
     text = re.sub(r'[\r\n\t]+', ' ', text)
-    # Strip Discord formatting characters like bold/italics markers if desired, or keep as plain text
-    # Remove surrogate pairs and emojis
-    text = re.sub(r'[\U00010000-\U0010ffff]', '', text)
-    # Remove non-printable / control characters except space
-    text = ''.join(c for c in text if 32 <= ord(c) <= 126 or ord(c) > 159)
+    # Retain standard printable ASCII (32-126) for safe in-game rendering
+    text = ''.join(c for c in text if 32 <= ord(c) <= 126)
     # Collapse multiple consecutive spaces
     text = re.sub(r'\s{2,}', ' ', text).strip()
     return text
@@ -213,19 +210,29 @@ class RelayCore:
         self.message_count_relayed = 0
         self.bot = None
         self.active_channel = None
+        self.game_player_name = None
 
     def record_discord_injection(self, mode, text):
         now = time.time()
         self._prune_dedup_cache(now)
         self.recent_discord_messages.append((mode.lower(), text.strip(), now))
 
-    def is_recent_discord_injection(self, mode, text):
+    def consume_discord_echo(self, mode, sender, text):
+        """Returns True and consumes the cached echo if this message matches a recent
+        Discord injection originating from our character."""
         now = time.time()
         self._prune_dedup_cache(now)
+        
+        # Echo suppression only applies to our own in-game character
+        if self.game_player_name and sender.lower() != self.game_player_name.lower():
+            return False
+
         clean = text.strip()
         mode_clean = mode.lower()
-        for m, t, _ in self.recent_discord_messages:
+        for idx, (m, t, _) in enumerate(self.recent_discord_messages):
             if m == mode_clean and t == clean:
+                # Consume the entry so it cannot suppress future legitimate messages
+                del self.recent_discord_messages[idx]
                 return True
         return False
 
@@ -246,6 +253,10 @@ class RelayCore:
             except Exception as e:
                 print(f"[TCP] Error writing to client: {e}")
                 dead_clients.add(writer)
+                try:
+                    writer.close()
+                except Exception:
+                    pass
         self.active_clients.difference_update(dead_clients)
         return True
 
@@ -276,7 +287,10 @@ class RelayCore:
                     line, buffer = buffer.split('\n', 1)
                     line = line.strip()
                     if line:
-                        await self.process_game_message(line)
+                        try:
+                            await self.process_game_message(line)
+                        except Exception as msg_err:
+                            print(f"[TCP] Error processing game message: {msg_err}")
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -286,7 +300,6 @@ class RelayCore:
             self.active_clients.discard(writer)
             try:
                 writer.close()
-                await writer.wait_closed()
             except Exception:
                 pass
 
@@ -298,6 +311,11 @@ class RelayCore:
             return
 
         msg_type = payload.get('type')
+        if msg_type == 'hello':
+            self.game_player_name = payload.get('player')
+            print(f"[Game->Relay] Connected player name: {self.game_player_name}")
+            return
+
         if msg_type == 'chat':
             mode = payload.get('mode', 'ls1').lower()
             sender = payload.get('sender', 'Unknown')
@@ -307,7 +325,7 @@ class RelayCore:
                 return
 
             # Check if this was a Discord-injected message echoing back
-            if self.is_recent_discord_injection(mode, message):
+            if self.consume_discord_echo(mode, sender, message):
                 # Suppress echo
                 return
 
@@ -318,18 +336,25 @@ class RelayCore:
                 else:
                     formatted = f"**[LS] {sender}:** {message}"
                 try:
-                    await self.active_channel.send(formatted)
+                    # Prevent mass-mentions like @everyone or @here
+                    await self.active_channel.send(
+                        formatted,
+                        allowed_mentions=discord.AllowedMentions.none()
+                    )
                 except Exception as e:
                     print(f"[Relay->Discord] Failed to send message: {e}")
+            else:
+                print(f"[Relay] Warning: No active Discord channel bound. Message not sent: {message}")
 
         elif msg_type == 'status':
             print(f"[Game->Relay] Status update: {payload}")
 
     async def process_discord_message(self, message):
         """Processes an incoming Discord message, parses commands, and sends to game."""
-        content = message.content.strip()
+        # Use clean_content to resolve mentions (@User, #channel) to clean text
+        content = message.clean_content.strip()
 
-        # Parse command prefixes
+        # Parse command prefixes explicitly
         target_mode = None
         raw_text = None
         if content.startswith(('!l ', '!ls ')):
@@ -338,7 +363,7 @@ class RelayCore:
         elif content.startswith(('!l2 ', '!ls2 ')):
             target_mode = 'ls2'
             raw_text = content.split(' ', 1)[1].strip()
-        elif content == '!l' or content == '!ls' or content == '!l2' or content == '!ls2':
+        elif content in ('!l', '!ls', '!l2', '!ls2'):
             await message.reply(f"Usage: `{content} <message>`")
             return
         else:
@@ -385,7 +410,11 @@ class RelayCore:
 def create_bot(core):
     intents = discord.Intents.default()
     intents.message_content = True
-    bot = commands.Bot(command_prefix='!', intents=intents)
+    bot = commands.Bot(
+        command_prefix='!',
+        intents=intents,
+        allowed_mentions=discord.AllowedMentions.none()
+    )
     core.bot = bot
 
     @bot.event
@@ -402,12 +431,15 @@ def create_bot(core):
         if not core.active_channel or message.channel.id != core.active_channel.id:
             return
 
-        # Check if it's a relay command (!l, !l2, etc.)
-        if message.content.startswith(('!l', '!ls')):
-            # Check for bot commands like !lsr status
-            if message.content.startswith(('!lsr', '!relay')):
-                await bot.process_commands(message)
-                return
+        content = message.clean_content.strip()
+
+        # Check for relay bot commands like !lsr status
+        if content.startswith(('!lsr', '!relay')):
+            await bot.process_commands(message)
+            return
+
+        # Check strictly for !l, !ls, !l2, !ls2 command prefixes
+        if content.startswith(('!l ', '!ls ', '!l2 ', '!ls2 ')) or content in ('!l', '!ls', '!l2', '!ls2'):
             await core.process_discord_message(message)
             return
 
@@ -421,6 +453,7 @@ def create_bot(core):
             client_status = f"Connected ({len(core.active_clients)} active client)" if core.active_clients else "Disconnected"
             embed = discord.Embed(title="LSRelay Status", color=0x2ecc71 if core.active_clients else 0xe74c3c)
             embed.add_field(name="Game Client", value=client_status, inline=True)
+            embed.add_field(name="Character", value=core.game_player_name or "Unknown", inline=True)
             embed.add_field(name="Linkshell Mode", value=core.linkshell_mode.upper(), inline=True)
             embed.add_field(name="Channel", value=f"<#{core.active_channel.id}>" if core.active_channel else "None", inline=True)
             embed.add_field(name="Relayed Messages", value=str(core.message_count_relayed), inline=True)
@@ -457,9 +490,7 @@ async def main():
     print(f"[TCP] Server listening on {core.tcp_host}:{core.tcp_port}")
 
     async with server:
-        # Run bot
         async with bot:
-            # Once ready or beforehand, get channel
             token = config.get('bot_token')
             if not token or token == "YOUR_DISCORD_BOT_TOKEN_HERE":
                 print("Error: bot_token is not set in config.json!", file=sys.stderr)
