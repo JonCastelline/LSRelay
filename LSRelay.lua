@@ -413,6 +413,19 @@ windower.register_event('load', function()
     try_connect()
 end)
 
+windower.register_event('login', function(name)
+    if is_connected then
+        local player_name = name or (windower.ffxi.get_player() and windower.ffxi.get_player().name) or 'Unknown'
+        send_payload({
+            type = 'hello',
+            player = player_name,
+            mode = settings.linkshell_mode
+        })
+    else
+        try_connect()
+    end
+end)
+
 windower.register_event('unload', function()
     disconnect()
 end)

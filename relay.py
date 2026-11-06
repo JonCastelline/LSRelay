@@ -243,6 +243,13 @@ class PairingManager:
         if clean_code in self.pending_codes:
             char_name = self.pending_codes[clean_code]["character_name"]
             del self.pending_codes[clean_code]
+
+            # If this character was previously linked to another Discord user, remove the old link
+            char_lower = char_name.lower()
+            for uid, data in list(self.pairings.items()):
+                if data.get("character_name", "").lower() == char_lower:
+                    del self.pairings[uid]
+
             self.pairings[str(discord_user_id)] = {
                 "character_name": char_name,
                 "linked_at": datetime.now(timezone.utc).isoformat()
@@ -305,7 +312,13 @@ class RelayCore:
     def record_discord_injection(self, mode, character_name, text):
         now = time.time()
         self._prune_dedup_cache(now)
-        self.recent_discord_injections.append((mode.lower(), character_name.lower(), text.strip(), now))
+        clean = text.strip()
+        mode_clean = mode.lower()
+        char_clean = character_name.lower()
+        self.recent_discord_injections.append((mode_clean, char_clean, clean, now))
+        # Pre-populate global deduplication so all other online clients drop this injection when heard in-game
+        key = f"{mode_clean}:{char_clean}:{clean}"
+        self.global_chat_dedup[key] = now
 
     def consume_discord_echo(self, mode, sender, text):
         """Returns True and consumes the cached echo if this message matches a recent
@@ -319,6 +332,9 @@ class RelayCore:
         for idx, (m, c, t, _) in enumerate(self.recent_discord_injections):
             if m == mode_clean and c == sender_clean and t == clean:
                 del self.recent_discord_injections[idx]
+                # Keep global dedup refreshed so other online clients in the same LS don't relay it
+                key = f"{mode_clean}:{sender_clean}:{clean}"
+                self.global_chat_dedup[key] = now
                 return True
         return False
 
@@ -378,7 +394,12 @@ class RelayCore:
 
     def register_client(self, writer, character_name):
         char_clean = character_name.strip().lower()
-        # If character had an old writer, close it
+        # If this writer was previously registered under a different character, remove old mapping
+        old_char = self.char_by_writer.get(writer)
+        if old_char and old_char != char_clean:
+            self.clients_by_char.pop(old_char, None)
+
+        # If this character name had a different active writer, close the old one
         old_writer = self.clients_by_char.get(char_clean)
         if old_writer and old_writer != writer:
             self.char_by_writer.pop(old_writer, None)
@@ -650,7 +671,7 @@ def create_bot(core):
             char = data.get("character_name", "Unknown")
             is_online = char.lower() in online_chars
             status_dot = "🟢 **Online**" if is_online else "⚪ *Offline*"
-            lines.append(f"• <@{uid_str}> $\\rightarrow$ **{char}** ({status_dot})")
+            lines.append(f"• <@{uid_str}> → **{char}** ({status_dot})")
 
         embed = discord.Embed(title="Linkshell Directory", description="\n".join(lines), color=0x3498db)
         await ctx.send(embed=embed)

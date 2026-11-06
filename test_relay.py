@@ -135,6 +135,18 @@ class TestPairingManager(unittest.TestCase):
         self.assertIsNone(self.pm.get_character_for_user(5555))
         self.assertIsNone(self.pm.unlink_user(5555))
 
+    def test_relink_character_to_different_user(self):
+        code1 = self.pm.generate_code("SharedChar")
+        self.pm.claim_code(code1, 111)
+        self.assertEqual(self.pm.get_character_for_user(111), "SharedChar")
+
+        # Re-link same character to user 222
+        code2 = self.pm.generate_code("SharedChar")
+        self.pm.claim_code(code2, 222)
+        self.assertEqual(self.pm.get_character_for_user(222), "SharedChar")
+        # Old user 111 should no longer be linked to SharedChar
+        self.assertIsNone(self.pm.get_character_for_user(111))
+
     def test_persistence(self):
         code = self.pm.generate_code("SaveChar")
         self.pm.claim_code(code, 7777)
@@ -173,6 +185,17 @@ class TestRelayCoreMultiTenant(unittest.IsolatedAsyncioTestCase):
         self.core.unregister_client(mock_writer_jon)
         self.assertNotIn("Jonchar", self.core.get_online_characters())
         self.assertIn("Alicechar", self.core.get_online_characters())
+
+    def test_client_character_switch_on_same_writer(self):
+        mock_writer = MagicMock()
+        self.core.register_client(mock_writer, "CharOne")
+        self.assertIn("Charone", self.core.get_online_characters())
+
+        # Same writer switches to CharTwo
+        self.core.register_client(mock_writer, "CharTwo")
+        online = self.core.get_online_characters()
+        self.assertNotIn("Charone", online)
+        self.assertIn("Chartwo", online)
 
     async def test_process_discord_message_unlinked(self):
         mock_msg = MagicMock()
@@ -250,14 +273,14 @@ class TestRelayCoreMultiTenant(unittest.IsolatedAsyncioTestCase):
         # Should be dropped as global duplicate
         self.assertEqual(mock_channel.send.call_count, 1)
 
-    async def test_echo_suppression_for_author(self):
+    async def test_echo_suppression_for_author_and_other_clients(self):
         mock_channel = AsyncMock()
         self.core.active_channel = mock_channel
 
-        # Jon injects message
+        # Jon injects message from Discord
         self.core.record_discord_injection("ls1", "JonChar", "Pulling now!")
 
-        # Game echoes message back from JonChar
+        # Client 1 (JonChar's game) echoes message back
         echo_payload = json.dumps({
             "type": "chat",
             "mode": "ls1",
@@ -265,6 +288,12 @@ class TestRelayCoreMultiTenant(unittest.IsolatedAsyncioTestCase):
             "message": "Pulling now!"
         })
         await self.core.process_game_message(echo_payload, MagicMock())
+        # Client 1's echo consumed, nothing sent to Discord
+        mock_channel.send.assert_not_awaited()
+
+        # Client 2 (AliceChar's game, in the same LS) also hears JonChar say "Pulling now!"
+        await self.core.process_game_message(echo_payload, MagicMock())
+        # Client 2's packet is dropped by global deduplication, still nothing sent to Discord!
         mock_channel.send.assert_not_awaited()
 
     async def test_tcp_pairing_request_flow(self):
