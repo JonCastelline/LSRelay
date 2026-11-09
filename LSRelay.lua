@@ -55,9 +55,11 @@ local function get_equipped_linkshells()
     local items = windower.ffxi.get_items()
     if items and items.equipment and extdata then
         local eq = items.equipment
-        -- Slot 1 (/l)
-        if eq.linkshell and eq.linkshell_bag and eq.linkshell > 0 then
-            local item = windower.ffxi.get_items(eq.linkshell_bag, eq.linkshell)
+        -- Slot 1 (/l): pearls can only live in bag 0 (Inventory)
+        local slot1_idx = eq.linkshell
+        local bag1 = eq.linkshell_bag or 0
+        if slot1_idx and slot1_idx > 0 then
+            local item = windower.ffxi.get_items(bag1, slot1_idx)
             if item and item.id and item.id > 0 and item.extdata then
                 local ok, parsed = pcall(extdata.decode, item)
                 if ok and parsed and parsed.name and #parsed.name > 0 then
@@ -66,23 +68,17 @@ local function get_equipped_linkshells()
             end
         end
 
-        -- Slot 2 (/l2)
-        if eq.linkshell2 and eq.linkshell2_bag and eq.linkshell2 > 0 then
-            local item = windower.ffxi.get_items(eq.linkshell2_bag, eq.linkshell2)
+        -- Slot 2 (/l2): pearls can only live in bag 0 (Inventory)
+        local slot2_idx = eq.linkshell2
+        local bag2 = eq.linkshell2_bag or 0
+        if slot2_idx and slot2_idx > 0 then
+            local item = windower.ffxi.get_items(bag2, slot2_idx)
             if item and item.id and item.id > 0 and item.extdata then
                 local ok, parsed = pcall(extdata.decode, item)
                 if ok and parsed and parsed.name and #parsed.name > 0 then
                     ls2_name = parsed.name
                 end
             end
-        end
-    end
-
-    -- Fallback for player.linkshell if equipment extdata was empty
-    if not ls1_name then
-        local player = windower.ffxi.get_player()
-        if player and player.linkshell and type(player.linkshell) == 'string' and player.linkshell ~= '' then
-            ls1_name = player.linkshell
         end
     end
 
@@ -543,6 +539,32 @@ windower.register_event('addon command', function(command, ...)
         print_msg('  Character: ' .. (player and player.name or 'Unknown') .. (server_name and (' on ' .. server_name) or ''))
         print_msg('  Linkshell 1 (/l): ' .. (ls1_name or 'None'))
         print_msg('  Linkshell 2 (/l2): ' .. (ls2_name or 'None'))
+        
+        local items = windower.ffxi.get_items()
+        local eq = items and items.equipment or {}
+        local dump = {}
+        for k, v in pairs(eq) do
+            if tostring(k):find('link') or tostring(k):find('ls') or tostring(k):find('pearl') or tostring(k):find('slot') then
+                table.insert(dump, tostring(k) .. '=' .. tostring(v))
+            end
+        end
+        if #dump == 0 then
+            for k, v in pairs(eq) do
+                table.insert(dump, tostring(k) .. '=' .. tostring(v))
+            end
+        end
+        print_msg('  [EQ Dump] ' .. table.concat(dump, ', '))
+        if eq.linkshell then
+            local it1 = windower.ffxi.get_items(eq.linkshell_bag or 0, eq.linkshell)
+            local ok, parsed = pcall(extdata.decode, it1)
+            print_msg('  [linkshell item] id=' .. tostring(it1 and it1.id) .. ' name=' .. tostring(ok and parsed and parsed.name or 'nil'))
+        end
+        if eq.linkshell2 then
+            local it2 = windower.ffxi.get_items(eq.linkshell2_bag or 0, eq.linkshell2)
+            local ok, parsed = pcall(extdata.decode, it2)
+            print_msg('  [linkshell2 item] id=' .. tostring(it2 and it2.id) .. ' name=' .. tostring(ok and parsed and parsed.name or 'nil'))
+        end
+
         print_msg('  Hub Server: ' .. settings.tcp_host .. ':' .. settings.tcp_port)
         print_msg('  Connection: ' .. (is_connected and 'Connected' or 'Disconnected'))
         print_msg('  Private Tells: ' .. (settings.relay_tells and 'ON' or 'OFF'))
