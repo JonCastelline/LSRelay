@@ -45,7 +45,6 @@ A lightweight, non-blocking Final Fantasy XI (Windower 4) addon that bridges in-
    ```text
    //lsr host <host_or_ip>
    ```
-   *(e.g. `//lsr host dads.homepokerleague.com`)*
 
 2. **Link Your Character to Discord**:
    - In-game, type:
