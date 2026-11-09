@@ -47,39 +47,40 @@ local function get_server_name()
     return nil
 end
 
+-- Helper: find and decode pearl item across valid equippable bags (Inventory, Satchel, Sack, Case)
+local function find_pearl_name_by_slot(slot_idx, bag_hint)
+    if not slot_idx or slot_idx <= 0 or not extdata then return nil end
+    local candidate_bags = {}
+    if bag_hint then table.insert(candidate_bags, bag_hint) end
+    for _, b in ipairs({0, 5, 6, 7}) do
+        if b ~= bag_hint then table.insert(candidate_bags, b) end
+    end
+
+    for _, b in ipairs(candidate_bags) do
+        local item = windower.ffxi.get_items(b, slot_idx)
+        if item and item.id and (item.id >= 512 and item.id <= 528) and item.extdata then
+            local ok, parsed = pcall(extdata.decode, item)
+            if ok and parsed and parsed.name and #parsed.name > 0 then
+                return parsed.name, b
+            end
+        end
+    end
+    return nil, nil
+end
+
 -- Resolve equipped linkshell names for Slot 1 (/l) and Slot 2 (/l2)
 local function get_equipped_linkshells()
     local ls1_name = nil
     local ls2_name = nil
 
     local items = windower.ffxi.get_items()
-    if items and items.equipment and extdata then
+    if items and items.equipment then
         local eq = items.equipment
-        -- Slot 1 (/l): pearls can only live in bag 0 (Inventory)
-        local slot1_idx = eq.linkshell
-        local bag1 = eq.linkshell_bag or 0
-        if slot1_idx and slot1_idx > 0 then
-            local item = windower.ffxi.get_items(bag1, slot1_idx)
-            if item and item.id and item.id > 0 and item.extdata then
-                local ok, parsed = pcall(extdata.decode, item)
-                if ok and parsed and parsed.name and #parsed.name > 0 then
-                    ls1_name = parsed.name
-                end
-            end
-        end
+        -- Slot 1 (/l)
+        ls1_name = find_pearl_name_by_slot(eq.linkshell, eq.linkshell_bag)
 
-        -- Slot 2 (/l2): pearls can only live in bag 0 (Inventory)
-        local slot2_idx = eq.linkshell2
-        local bag2 = eq.linkshell2_bag or 0
-        if slot2_idx and slot2_idx > 0 then
-            local item = windower.ffxi.get_items(bag2, slot2_idx)
-            if item and item.id and item.id > 0 and item.extdata then
-                local ok, parsed = pcall(extdata.decode, item)
-                if ok and parsed and parsed.name and #parsed.name > 0 then
-                    ls2_name = parsed.name
-                end
-            end
-        end
+        -- Slot 2 (/l2)
+        ls2_name = find_pearl_name_by_slot(eq.linkshell2, eq.linkshell2_bag)
     end
 
     return ls1_name, ls2_name
@@ -554,16 +555,10 @@ windower.register_event('addon command', function(command, ...)
             end
         end
         print_msg('  [EQ Dump] ' .. table.concat(dump, ', '))
-        if eq.linkshell then
-            local it1 = windower.ffxi.get_items(eq.linkshell_bag or 0, eq.linkshell)
-            local ok, parsed = pcall(extdata.decode, it1)
-            print_msg('  [linkshell item] id=' .. tostring(it1 and it1.id) .. ' name=' .. tostring(ok and parsed and parsed.name or 'nil'))
-        end
-        if eq.linkshell2 then
-            local it2 = windower.ffxi.get_items(eq.linkshell2_bag or 0, eq.linkshell2)
-            local ok, parsed = pcall(extdata.decode, it2)
-            print_msg('  [linkshell2 item] id=' .. tostring(it2 and it2.id) .. ' name=' .. tostring(ok and parsed and parsed.name or 'nil'))
-        end
+        local it1_name, it1_bag = find_pearl_name_by_slot(eq.linkshell, eq.linkshell_bag)
+        local it2_name, it2_bag = find_pearl_name_by_slot(eq.linkshell2, eq.linkshell2_bag)
+        print_msg('  [EQ Slot 1] idx=' .. tostring(eq.linkshell) .. ' bag=' .. tostring(eq.linkshell_bag) .. ' -> ' .. tostring(it1_name) .. ' (found in bag ' .. tostring(it1_bag) .. ')')
+        print_msg('  [EQ Slot 2] idx=' .. tostring(eq.linkshell2) .. ' bag=' .. tostring(eq.linkshell2_bag) .. ' -> ' .. tostring(it2_name) .. ' (found in bag ' .. tostring(it2_bag) .. ')')
 
         print_msg('  Hub Server: ' .. settings.tcp_host .. ':' .. settings.tcp_port)
         print_msg('  Connection: ' .. (is_connected and 'Connected' or 'Disconnected'))
