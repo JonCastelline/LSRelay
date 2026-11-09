@@ -14,8 +14,8 @@ A lightweight, non-blocking Final Fantasy XI (Windower 4) addon that bridges in-
   - Reply straight from Discord with `!r <msg>` or send a tell with `!t <PlayerName> <msg>`.
 - **GM Emergency Alerts**:
   - Game Master communications trigger a high-priority Discord alert DM, an audible alarm chime, and an automatic safety protocol (halts combat actions and unloads configured automation addons).
-- **Flexible Pearl Slot Mapping**:
-  - Wear your linkshell pearl in Slot 1 or Slot 2 (`//lsr mode ls2`).
+- **Automatic Pearl Slot Detection**:
+  - Wear linkpearls in Slot 1, Slot 2, or both across your Inventory, Mog Satchel, Mog Sack, or Mog Case—the addon automatically resolves linkshell names and routes chat seamlessly.
 - **Zero Game Lag**:
   - Uses non-blocking TCP sockets (`LuaSocket`) with rate-throttled chat injection. Zero disk I/O, zero stuttering, zero frame drops.
 
@@ -68,7 +68,6 @@ A lightweight, non-blocking Final Fantasy XI (Windower 4) addon that bridges in-
 | `//lsr link` | Requests a 5-minute pairing code to link with your Discord account. |
 | `//lsr host <host>` | Configures the Hub IP or domain name. |
 | `//lsr port <port>` | Configures the Hub TCP port (default: `45124`). |
-| `//lsr mode <ls1\|ls2\|both>` | Switches local pearl slot mapping (`ls2` maps incoming chat to `/l2 `). |
 | `//lsr tells [on\|off]` | Toggles forwarding private tells to your Discord DM. |
 | `//lsr gm [on\|off]` | Toggles GM emergency alerts and safety protocol. |
 | `//lsr gmunload <addons>` | Comma-separated list of addons to unload on GM alert (e.g. `trust,react`). |
