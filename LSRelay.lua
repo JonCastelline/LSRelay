@@ -346,7 +346,6 @@ local function handle_incoming_server_message(line)
         windower.add_to_chat(200, '[LSRelay] (Code expires in ' .. math.floor(expires / 60) .. ' minutes)')
         windower.add_to_chat(200, '--------------------------------------------------')
     elseif data.type == 'inject_chat' then
-        local mode = (data.mode or 'ls1'):lower()
         local target = data.target
         local msg = data.message or ''
         if msg ~= '' then
@@ -354,14 +353,15 @@ local function handle_incoming_server_message(line)
                 table.remove(chat_queue, 1)
             end
             table.insert(chat_queue, {
-                mode = mode,
+                is_tell = (data.mode == 'tell' or target ~= nil),
                 target = target,
                 server = data.server,
                 linkshell = data.linkshell,
                 message = msg
             })
             if settings.debug then
-                print_msg('Queued chat for ' .. (data.linkshell or mode):upper() .. ': ' .. msg)
+                local dest = data.linkshell or (target and ('tell:' .. tostring(target))) or 'LS'
+                print_msg('Queued chat for ' .. dest .. ': ' .. msg)
             end
         end
     end
@@ -424,28 +424,17 @@ local function process_chat_queue()
 
     local item = table.remove(chat_queue, 1)
     local cmd = nil
-    if item.mode == 'tell' then
+    if item.is_tell then
         cmd = '/t ' .. tostring(item.target) .. ' ' .. item.message
     else
         local ls1_name, ls2_name = get_equipped_linkshells()
         local target_ls = item.linkshell and item.linkshell:lower() or nil
-        local use_ls2 = false
-
-        if target_ls and ls2_name and target_ls == ls2_name:lower() then
-            use_ls2 = true
-        elseif target_ls and ls1_name and target_ls == ls1_name:lower() then
-            use_ls2 = false
-        else
-            use_ls2 = (item.mode == 'ls2')
-        end
-
+        local use_ls2 = (target_ls and ls2_name and target_ls == ls2_name:lower())
         local prefix = use_ls2 and '/l2 ' or '/l '
         cmd = prefix .. item.message
-    end
-
-    if item.mode ~= 'tell' then
         record_injected_chat(item.message)
     end
+
     windower.chat.input(cmd)
     last_chat_time = now
 end
@@ -559,7 +548,6 @@ windower.register_event('chat message', function(message, sender, mode, gm)
 
     send_payload({
         type = 'chat',
-        mode = ls_mode,
         server = server_name,
         linkshell = active_ls,
         sender = sender,
@@ -604,7 +592,6 @@ windower.register_event('outgoing chunk', function(id, data, modified, injected,
 
                     send_payload({
                         type = 'chat',
-                        mode = ls_mode,
                         server = server_name,
                         linkshell = active_ls,
                         sender = sender_name,
