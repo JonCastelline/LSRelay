@@ -259,11 +259,7 @@ local function handle_incoming_server_message(line)
         return
     end
 
-    if data.type == 'config' then
-        if settings.debug then
-            print_msg('Hub linkshell mode: ' .. tostring(data.linkshell_mode))
-        end
-    elseif data.type == 'pair_code' then
+    if data.type == 'pair_code' then
         local code = data.code or 'UNKNOWN'
         local expires = tonumber(data.expires_in) or 300
         windower.add_to_chat(200, '--------------------------------------------------')
