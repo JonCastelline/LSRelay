@@ -551,20 +551,11 @@ windower.register_event('addon command', function(command, ...)
             return
         end
         local server_name = get_server_name()
-        local ls1_name, ls2_name = get_equipped_linkshells()
-        local target_ls = ls1_name
-        local slot_arg = args[1] and args[1]:lower()
-        if slot_arg == '2' or slot_arg == 'ls2' then
-            target_ls = ls2_name
-        elseif not target_ls and ls2_name then
-            target_ls = ls2_name
-        end
-        print_msg('Requesting pairing code for ' .. player.name .. (target_ls and (' (' .. target_ls .. ')') or '') .. '...')
+        print_msg('Requesting pairing code for ' .. player.name .. '...')
         send_payload({
             type = 'request_pair_code',
             player = player.name,
-            server = server_name,
-            linkshell = target_ls
+            server = server_name
         })
     elseif command == 'host' then
         local new_host = args[1]
@@ -619,7 +610,7 @@ windower.register_event('addon command', function(command, ...)
         print_msg('Debug mode: ' .. (settings.debug and 'ON' or 'OFF'))
     else
         print_msg('Commands:')
-        print_msg('  //lsr link [1|2] - Request a 5-minute pairing code to link with Discord (Slot 1 or 2)')
+        print_msg('  //lsr link - Request a 5-minute pairing code to link with Discord')
         print_msg('  //lsr status - View Hub connection status and settings')
         print_msg('  //lsr host <host> - Set Hub IP or domain')
         print_msg('  //lsr port <port> - Set Hub TCP port')
