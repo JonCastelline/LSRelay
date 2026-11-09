@@ -1,12 +1,14 @@
 _addon.name = 'LSRelay'
 _addon.author = 'Frodobald'
-_addon.version = '1.3.0'
+_addon.version = '1.4.0'
 _addon.commands = {'lsrelay', 'lsr'}
 
 require('strings')
 local packets = require('packets')
 require('tables')
 require('chat')
+local res = require('resources')
+local extdata = require('extdata')
 local config = require('config')
 local socket = require('socket')
 
@@ -14,7 +16,6 @@ local socket = require('socket')
 local defaults = {
     tcp_host = '127.0.0.1',
     tcp_port = 45124,
-    linkshell_mode = 'ls1', -- 'ls1', 'ls2', or 'both'
     relay_tells = true,
     relay_gm = true,
     gm_unload_addons = 'trust,react,cureplease,autoinvite',
@@ -36,6 +37,47 @@ local chat_queue = {}
 local max_queue_size = 20
 local last_chat_time = 0
 local chat_delay = 0.6 -- 600ms between injected chat lines to prevent drop/kick
+
+-- Resolve active server name from Windower resources
+local function get_server_name()
+    local info = windower.ffxi.get_info()
+    if info and info.server and res and res.servers and res.servers[info.server] then
+        return res.servers[info.server].en
+    end
+    return nil
+end
+
+-- Resolve equipped linkshell names for Slot 1 (/l) and Slot 2 (/l2)
+local function get_equipped_linkshells()
+    local player = windower.ffxi.get_player()
+    local ls1_name = (player and player.linkshell and type(player.linkshell) == 'string' and player.linkshell ~= '') and player.linkshell or nil
+    local ls2_name = nil
+
+    -- Find Slot 2 by scanning for equipped pearls (status == 19) in equippable bags (Inventory, Satchel, Sack, Case)
+    local equippable_bags = {0, 5, 6, 7}
+    for _, bag_id in ipairs(equippable_bags) do
+        local bag = windower.ffxi.get_items(bag_id)
+        if bag and type(bag) == 'table' then
+            for idx = 1, (bag.max or 80) do
+                local it = bag[idx]
+                if it and it.id and (it.id >= 512 and it.id <= 528) and (it.status == 19 or it.status == 5) then
+                    local ok, parsed = pcall(extdata.decode, it)
+                    if ok and parsed and parsed.name and #parsed.name > 0 then
+                        if not ls1_name then
+                            ls1_name = parsed.name
+                        elseif parsed.name:lower() ~= ls1_name:lower() then
+                            ls2_name = parsed.name
+                            break
+                        end
+                    end
+                end
+            end
+        end
+        if ls2_name then break end
+    end
+
+    return ls1_name, ls2_name
+end
 
 -- Fallback JSON stringifier with control code escaping
 local function to_json(val)
@@ -201,10 +243,11 @@ local function try_connect()
         print_msg('Connected to Hub at ' .. settings.tcp_host .. ':' .. settings.tcp_port)
         local player = windower.ffxi.get_player()
         local player_name = player and player.name or 'Unknown'
+        local server_name = get_server_name()
         send_payload({
             type = 'hello',
             player = player_name,
-            mode = settings.linkshell_mode
+            server = server_name
         })
     else
         if settings.debug then
@@ -225,11 +268,7 @@ local function handle_incoming_server_message(line)
         return
     end
 
-    if data.type == 'config' then
-        if settings.debug then
-            print_msg('Hub linkshell mode: ' .. tostring(data.linkshell_mode))
-        end
-    elseif data.type == 'pair_code' then
+    if data.type == 'pair_code' then
         local code = data.code or 'UNKNOWN'
         local expires = tonumber(data.expires_in) or 300
         windower.add_to_chat(200, '--------------------------------------------------')
@@ -248,10 +287,12 @@ local function handle_incoming_server_message(line)
             table.insert(chat_queue, {
                 mode = mode,
                 target = target,
+                server = data.server,
+                linkshell = data.linkshell,
                 message = msg
             })
             if settings.debug then
-                print_msg('Queued chat for ' .. mode:upper() .. ': ' .. msg)
+                print_msg('Queued chat for ' .. (data.linkshell or mode):upper() .. ': ' .. msg)
             end
         end
     end
@@ -317,15 +358,18 @@ local function process_chat_queue()
     if item.mode == 'tell' then
         cmd = '/t ' .. tostring(item.target) .. ' ' .. item.message
     else
-        local active_mode = settings.linkshell_mode:lower()
+        local ls1_name, ls2_name = get_equipped_linkshells()
+        local target_ls = item.linkshell and item.linkshell:lower() or nil
         local use_ls2 = false
-        if active_mode == 'ls2' then
+
+        if target_ls and ls2_name and target_ls == ls2_name:lower() then
             use_ls2 = true
-        elseif active_mode == 'ls1' then
+        elseif target_ls and ls1_name and target_ls == ls1_name:lower() then
             use_ls2 = false
         else
             use_ls2 = (item.mode == 'ls2')
         end
+
         local prefix = use_ls2 and '/l2 ' or '/l '
         cmd = prefix .. item.message
     end
@@ -376,6 +420,7 @@ windower.register_event('chat message', function(message, sender, mode, gm)
             end
             send_payload({
                 type = 'gm',
+                server = get_server_name(),
                 sender = sender or 'GM',
                 message = clean_msg
             })
@@ -393,6 +438,7 @@ windower.register_event('chat message', function(message, sender, mode, gm)
             end
             send_payload({
                 type = 'tell',
+                server = get_server_name(),
                 sender = sender or 'Unknown',
                 message = clean_msg
             })
@@ -409,32 +455,24 @@ windower.register_event('chat message', function(message, sender, mode, gm)
         return
     end
 
-    local active_mode = settings.linkshell_mode:lower()
-    if active_mode ~= 'both' and active_mode ~= ls_mode then
-        return
-    end
-
     local clean_msg = message
     if clean_msg.strip_format then
         clean_msg = clean_msg:strip_format()
     end
 
-    -- If player specifically mapped the relay to their personal LS2 slot, report it as the primary mode
-    local report_mode = ls_mode
-    if active_mode == 'ls2' and ls_mode == 'ls2' then
-        report_mode = 'ls1'
-    end
+    local ls1_name, ls2_name = get_equipped_linkshells()
+    local server_name = get_server_name()
+    local active_ls = (ls_mode == 'ls2') and ls2_name or ls1_name
 
     send_payload({
         type = 'chat',
-        mode = report_mode,
+        mode = ls_mode,
+        server = server_name,
+        linkshell = active_ls,
         sender = sender,
         message = clean_msg
     })
 end)
-
-
-
 
 -- Catch own outgoing chat packets (0x0B5 = Linkshell speech)
 windower.register_event('outgoing chunk', function(id, data, modified, injected, blocked)
@@ -450,30 +488,25 @@ windower.register_event('outgoing chunk', function(id, data, modified, injected,
             if clean_msg and #clean_msg > 0 then
                 local ls_mode = (mode == 5 and 'ls1') or (mode == 27 and 'ls2') or nil
                 if ls_mode then
-                    local active_mode = settings.linkshell_mode:lower()
-                    if active_mode ~= 'both' and active_mode ~= ls_mode then
-                        return
-                    end
-
                     if clean_msg.strip_format then
                         clean_msg = clean_msg:strip_format()
                     end
 
                     local player = windower.ffxi.get_player()
                     local sender_name = player and player.name or 'Unknown'
-
-                    local report_mode = ls_mode
-                    if active_mode == 'ls2' and ls_mode == 'ls2' then
-                        report_mode = 'ls1'
-                    end
+                    local ls1_name, ls2_name = get_equipped_linkshells()
+                    local server_name = get_server_name()
+                    local active_ls = (ls_mode == 'ls2') and ls2_name or ls1_name
 
                     if settings.debug then
-                        print_msg('Outgoing 0x0B5: mode=' .. tostring(mode) .. ' msg=' .. clean_msg)
+                        print_msg('Outgoing 0x0B5: mode=' .. tostring(mode) .. ' (' .. tostring(active_ls) .. ') msg=' .. clean_msg)
                     end
 
                     send_payload({
                         type = 'chat',
-                        mode = report_mode,
+                        mode = ls_mode,
+                        server = server_name,
+                        linkshell = active_ls,
                         sender = sender_name,
                         message = clean_msg
                     })
@@ -493,11 +526,14 @@ windower.register_event('addon command', function(command, ...)
 
     if command == 'status' then
         local player = windower.ffxi.get_player()
+        local server_name = get_server_name()
+        local ls1_name, ls2_name = get_equipped_linkshells()
         print_msg('Status:')
-        print_msg('  Character: ' .. (player and player.name or 'Unknown'))
+        print_msg('  Character: ' .. (player and player.name or 'Unknown') .. (server_name and (' on ' .. server_name) or ''))
+        print_msg('  Linkshell 1 (/l): ' .. (ls1_name or 'None'))
+        print_msg('  Linkshell 2 (/l2): ' .. (ls2_name or 'None'))
         print_msg('  Hub Server: ' .. settings.tcp_host .. ':' .. settings.tcp_port)
         print_msg('  Connection: ' .. (is_connected and 'Connected' or 'Disconnected'))
-        print_msg('  Linkshell Mode: ' .. settings.linkshell_mode:upper())
         print_msg('  Private Tells: ' .. (settings.relay_tells and 'ON' or 'OFF'))
         print_msg('  GM Alerts: ' .. (settings.relay_gm and 'ON' or 'OFF'))
         if settings.relay_gm and settings.gm_unload_addons ~= '' then
@@ -514,10 +550,12 @@ windower.register_event('addon command', function(command, ...)
             print_error('Unable to determine character name. Please ensure you are logged into FFXI.')
             return
         end
+        local server_name = get_server_name()
         print_msg('Requesting pairing code for ' .. player.name .. '...')
         send_payload({
             type = 'request_pair_code',
-            player = player.name
+            player = player.name,
+            server = server_name
         })
     elseif command == 'host' then
         local new_host = args[1]
@@ -539,18 +577,6 @@ windower.register_event('addon command', function(command, ...)
         config.save(settings)
         print_msg('Hub port set to: ' .. tostring(new_port) .. '. Reconnecting...')
         try_connect()
-    elseif command == 'mode' then
-        local new_mode = args[1] and args[1]:lower()
-        if new_mode ~= 'ls1' and new_mode ~= 'ls2' and new_mode ~= 'both' then
-            print_error('Usage: //lsr mode <ls1|ls2|both>')
-            return
-        end
-        settings.linkshell_mode = new_mode
-        config.save(settings)
-        print_msg('Linkshell mode set to: ' .. new_mode:upper())
-        if new_mode == 'ls2' then
-            print_msg('(All Discord messages will be spoken via /l2 and incoming LS2 chat relayed)')
-        end
     elseif command == 'tells' then
         local arg = args[1] and args[1]:lower()
         if arg == 'on' then settings.relay_tells = true
@@ -588,7 +614,6 @@ windower.register_event('addon command', function(command, ...)
         print_msg('  //lsr status - View Hub connection status and settings')
         print_msg('  //lsr host <host> - Set Hub IP or domain')
         print_msg('  //lsr port <port> - Set Hub TCP port')
-        print_msg('  //lsr mode <ls1|ls2|both> - Set active linkshell')
         print_msg('  //lsr tells [on|off] - Toggle private tells relay to your Discord DM')
         print_msg('  //lsr gm [on|off] - Toggle high-priority GM alerts and safety protocol')
         print_msg('  //lsr gmunload <addons> - Comma-separated addons to unload on GM alert')
@@ -604,10 +629,11 @@ end)
 windower.register_event('login', function(name)
     if is_connected then
         local player_name = name or (windower.ffxi.get_player() and windower.ffxi.get_player().name) or 'Unknown'
+        local server_name = get_server_name()
         send_payload({
             type = 'hello',
             player = player_name,
-            mode = settings.linkshell_mode
+            server = server_name
         })
     else
         try_connect()
