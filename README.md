@@ -80,8 +80,7 @@ A lightweight, non-blocking Final Fantasy XI (Windower 4) addon that bridges in-
 
 | Command | Location | Description |
 | :--- | :--- | :--- |
-| `!l <message>` | Linkshell Channel | Speaks `<message>` into Linkshell through your character. |
-| `!l2 <message>` | Linkshell Channel | Speaks `<message>` into Linkshell 2 through your character. |
+| !l <message> | Linkshell Channel | Speaks <message> into the channel's linkshell through your character. |
 | `!t <Player> <msg>` | Bot DM | Sends a private tell `/t <Player> <msg>` from your character. |
 | `!r <message>` | Bot DM | Replies `/t <LastSender> <msg>` to the last person who sent you a tell. |
 | `!lslink <code>` | Linkshell Channel | Links your Discord account using a 6-digit pairing code. |
