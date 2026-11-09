@@ -555,10 +555,29 @@ windower.register_event('addon command', function(command, ...)
             end
         end
         print_msg('  [EQ Dump] ' .. table.concat(dump, ', '))
-        local it1_name, it1_bag = find_pearl_name_by_slot(eq.linkshell, eq.linkshell_bag)
-        local it2_name, it2_bag = find_pearl_name_by_slot(eq.linkshell2, eq.linkshell2_bag)
-        print_msg('  [EQ Slot 1] idx=' .. tostring(eq.linkshell) .. ' bag=' .. tostring(eq.linkshell_bag) .. ' -> ' .. tostring(it1_name) .. ' (found in bag ' .. tostring(it1_bag) .. ')')
-        print_msg('  [EQ Slot 2] idx=' .. tostring(eq.linkshell2) .. ' bag=' .. tostring(eq.linkshell2_bag) .. ' -> ' .. tostring(it2_name) .. ' (found in bag ' .. tostring(it2_bag) .. ')')
+        local p = windower.ffxi.get_player() or {}
+        local p_dump = {}
+        for k, v in pairs(p) do
+            if tostring(k):find('link') or tostring(k):find('ls') or tostring(k):find('pearl') then
+                table.insert(p_dump, tostring(k) .. '=' .. tostring(v))
+            end
+        end
+        print_msg('  [Player Dump] ' .. (table.concat(p_dump, ', ') ~= '' and table.concat(p_dump, ', ') or 'no link keys in player'))
+
+        -- Scan bags 0 (Inventory), 5 (Satchel), 6 (Sack), 7 (Case) for linkshell items
+        for _, bag_id in ipairs({0, 5, 6, 7}) do
+            local bag = windower.ffxi.get_items(bag_id)
+            if bag and type(bag) == 'table' then
+                for idx = 1, (bag.max or 80) do
+                    local it = bag[idx]
+                    if it and it.id and it.id >= 512 and it.id <= 528 then
+                        local ok, parsed = pcall(extdata.decode, it)
+                        local ls_name = (ok and parsed and parsed.name) or 'unknown'
+                        print_msg('  [Bag ' .. bag_id .. ' #' .. idx .. '] id=' .. it.id .. ' status=' .. tostring(it.status) .. ' name=' .. ls_name)
+                    end
+                end
+            end
+        end
 
         print_msg('  Hub Server: ' .. settings.tcp_host .. ':' .. settings.tcp_port)
         print_msg('  Connection: ' .. (is_connected and 'Connected' or 'Disconnected'))
