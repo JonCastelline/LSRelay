@@ -64,8 +64,8 @@ A lightweight, non-blocking Final Fantasy XI (Windower 4) addon that bridges in-
 
 | Command | Description |
 | :--- | :--- |
-| `//lsr status` | Displays character name, Hub address, connection status, mode, and alert settings. |
-| `//lsr link` | Requests a 5-minute pairing code to link with your Discord account. |
+| `//lsr status` | Displays character name, Hub address, connection status, equipped linkshells, and alert settings. |
+| `//lsr link [1\|2]` | Requests a 5-minute pairing code to link with your Discord account (optionally specify pearl slot 1 or 2). |
 | `//lsr host <host>` | Configures the Hub IP or domain name. |
 | `//lsr port <port>` | Configures the Hub TCP port (default: `45124`). |
 | `//lsr tells [on\|off]` | Toggles forwarding private tells to your Discord DM. |
