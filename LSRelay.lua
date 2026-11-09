@@ -49,13 +49,24 @@ end
 
 -- Resolve equipped linkshell names for Slot 1 (/l) and Slot 2 (/l2)
 local function get_equipped_linkshells()
-    local player = windower.ffxi.get_player()
-    local ls1_name = (player and player.linkshell and player.linkshell ~= '') and player.linkshell or nil
+    local ls1_name = nil
     local ls2_name = nil
 
     local items = windower.ffxi.get_items()
     if items and items.equipment and extdata then
         local eq = items.equipment
+        -- Slot 1 (/l)
+        if eq.linkshell and eq.linkshell_bag and eq.linkshell > 0 then
+            local item = windower.ffxi.get_items(eq.linkshell_bag, eq.linkshell)
+            if item and item.id and item.id > 0 and item.extdata then
+                local ok, parsed = pcall(extdata.decode, item)
+                if ok and parsed and parsed.name and #parsed.name > 0 then
+                    ls1_name = parsed.name
+                end
+            end
+        end
+
+        -- Slot 2 (/l2)
         if eq.linkshell2 and eq.linkshell2_bag and eq.linkshell2 > 0 then
             local item = windower.ffxi.get_items(eq.linkshell2_bag, eq.linkshell2)
             if item and item.id and item.id > 0 and item.extdata then
@@ -64,6 +75,14 @@ local function get_equipped_linkshells()
                     ls2_name = parsed.name
                 end
             end
+        end
+    end
+
+    -- Fallback for player.linkshell if equipment extdata was empty
+    if not ls1_name then
+        local player = windower.ffxi.get_player()
+        if player and player.linkshell and type(player.linkshell) == 'string' and player.linkshell ~= '' then
+            ls1_name = player.linkshell
         end
     end
 
