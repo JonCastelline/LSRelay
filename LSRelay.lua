@@ -47,40 +47,33 @@ local function get_server_name()
     return nil
 end
 
--- Helper: find and decode pearl item across valid equippable bags (Inventory, Satchel, Sack, Case)
-local function find_pearl_name_by_slot(slot_idx, bag_hint)
-    if not slot_idx or slot_idx <= 0 or not extdata then return nil end
-    local candidate_bags = {}
-    if bag_hint then table.insert(candidate_bags, bag_hint) end
-    for _, b in ipairs({0, 5, 6, 7}) do
-        if b ~= bag_hint then table.insert(candidate_bags, b) end
-    end
-
-    for _, b in ipairs(candidate_bags) do
-        local item = windower.ffxi.get_items(b, slot_idx)
-        if item and item.id and (item.id >= 512 and item.id <= 528) and item.extdata then
-            local ok, parsed = pcall(extdata.decode, item)
-            if ok and parsed and parsed.name and #parsed.name > 0 then
-                return parsed.name, b
-            end
-        end
-    end
-    return nil, nil
-end
-
 -- Resolve equipped linkshell names for Slot 1 (/l) and Slot 2 (/l2)
 local function get_equipped_linkshells()
-    local ls1_name = nil
+    local player = windower.ffxi.get_player()
+    local ls1_name = (player and player.linkshell and type(player.linkshell) == 'string' and player.linkshell ~= '') and player.linkshell or nil
     local ls2_name = nil
 
-    local items = windower.ffxi.get_items()
-    if items and items.equipment then
-        local eq = items.equipment
-        -- Slot 1 (/l)
-        ls1_name = find_pearl_name_by_slot(eq.linkshell, eq.linkshell_bag)
-
-        -- Slot 2 (/l2)
-        ls2_name = find_pearl_name_by_slot(eq.linkshell2, eq.linkshell2_bag)
+    -- Find Slot 2 by scanning for equipped pearls (status == 19) in equippable bags (Inventory, Satchel, Sack, Case)
+    local equippable_bags = {0, 5, 6, 7}
+    for _, bag_id in ipairs(equippable_bags) do
+        local bag = windower.ffxi.get_items(bag_id)
+        if bag and type(bag) == 'table' then
+            for idx = 1, (bag.max or 80) do
+                local it = bag[idx]
+                if it and it.id and (it.id >= 512 and it.id <= 528) and (it.status == 19 or it.status == 5) then
+                    local ok, parsed = pcall(extdata.decode, it)
+                    if ok and parsed and parsed.name and #parsed.name > 0 then
+                        if not ls1_name then
+                            ls1_name = parsed.name
+                        elseif parsed.name:lower() ~= ls1_name:lower() then
+                            ls2_name = parsed.name
+                            break
+                        end
+                    end
+                end
+            end
+        end
+        if ls2_name then break end
     end
 
     return ls1_name, ls2_name
@@ -540,45 +533,6 @@ windower.register_event('addon command', function(command, ...)
         print_msg('  Character: ' .. (player and player.name or 'Unknown') .. (server_name and (' on ' .. server_name) or ''))
         print_msg('  Linkshell 1 (/l): ' .. (ls1_name or 'None'))
         print_msg('  Linkshell 2 (/l2): ' .. (ls2_name or 'None'))
-        
-        local items = windower.ffxi.get_items()
-        local eq = items and items.equipment or {}
-        local dump = {}
-        for k, v in pairs(eq) do
-            if tostring(k):find('link') or tostring(k):find('ls') or tostring(k):find('pearl') or tostring(k):find('slot') then
-                table.insert(dump, tostring(k) .. '=' .. tostring(v))
-            end
-        end
-        if #dump == 0 then
-            for k, v in pairs(eq) do
-                table.insert(dump, tostring(k) .. '=' .. tostring(v))
-            end
-        end
-        print_msg('  [EQ Dump] ' .. table.concat(dump, ', '))
-        local p = windower.ffxi.get_player() or {}
-        local p_dump = {}
-        for k, v in pairs(p) do
-            if tostring(k):find('link') or tostring(k):find('ls') or tostring(k):find('pearl') then
-                table.insert(p_dump, tostring(k) .. '=' .. tostring(v))
-            end
-        end
-        print_msg('  [Player Dump] ' .. (table.concat(p_dump, ', ') ~= '' and table.concat(p_dump, ', ') or 'no link keys in player'))
-
-        -- Scan bags 0 (Inventory), 5 (Satchel), 6 (Sack), 7 (Case) for linkshell items
-        for _, bag_id in ipairs({0, 5, 6, 7}) do
-            local bag = windower.ffxi.get_items(bag_id)
-            if bag and type(bag) == 'table' then
-                for idx = 1, (bag.max or 80) do
-                    local it = bag[idx]
-                    if it and it.id and it.id >= 512 and it.id <= 528 then
-                        local ok, parsed = pcall(extdata.decode, it)
-                        local ls_name = (ok and parsed and parsed.name) or 'unknown'
-                        print_msg('  [Bag ' .. bag_id .. ' #' .. idx .. '] id=' .. it.id .. ' status=' .. tostring(it.status) .. ' name=' .. ls_name)
-                    end
-                end
-            end
-        end
-
         print_msg('  Hub Server: ' .. settings.tcp_host .. ':' .. settings.tcp_port)
         print_msg('  Connection: ' .. (is_connected and 'Connected' or 'Disconnected'))
         print_msg('  Private Tells: ' .. (settings.relay_tells and 'ON' or 'OFF'))
