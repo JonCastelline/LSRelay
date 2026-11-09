@@ -4,6 +4,7 @@ _addon.version = '1.3.0'
 _addon.commands = {'lsrelay', 'lsr'}
 
 require('strings')
+local packets = require('packets')
 require('tables')
 require('chat')
 local config = require('config')
@@ -363,6 +364,9 @@ end)
 
 -- Listen for in-game Linkshell chat messages
 windower.register_event('chat message', function(message, sender, mode, gm)
+    if settings.debug then
+        print_msg('Chat event: mode=' .. tostring(mode) .. ' sender=' .. tostring(sender) .. ' msg=' .. tostring(message))
+    end
     -- GM Detection (gm boolean flag, or mode 12/13)
     if gm or mode == 12 or mode == 13 then
         if settings.relay_gm then
@@ -427,6 +431,59 @@ windower.register_event('chat message', function(message, sender, mode, gm)
         sender = sender,
         message = clean_msg
     })
+end)
+
+
+
+
+-- Catch own outgoing chat packets (0x0B5 = Linkshell speech)
+windower.register_event('outgoing chunk', function(id, data, modified, injected, blocked)
+    if blocked or injected then return end
+
+    if id == 0x0B5 then
+        local ok, err = pcall(function()
+            local p = packets.parse('outgoing', data)
+            local mode = p['Mode'] or p['mode']
+            local raw_msg = p['Message'] or p['message'] or ''
+            local clean_msg = raw_msg:gsub('%z', ''):match('^%s*(.-)%s*$')
+
+            if clean_msg and #clean_msg > 0 then
+                local ls_mode = (mode == 5 and 'ls1') or (mode == 27 and 'ls2') or nil
+                if ls_mode then
+                    local active_mode = settings.linkshell_mode:lower()
+                    if active_mode ~= 'both' and active_mode ~= ls_mode then
+                        return
+                    end
+
+                    if clean_msg.strip_format then
+                        clean_msg = clean_msg:strip_format()
+                    end
+
+                    local player = windower.ffxi.get_player()
+                    local sender_name = player and player.name or 'Unknown'
+
+                    local report_mode = ls_mode
+                    if active_mode == 'ls2' and ls_mode == 'ls2' then
+                        report_mode = 'ls1'
+                    end
+
+                    if settings.debug then
+                        print_msg('Outgoing 0x0B5: mode=' .. tostring(mode) .. ' msg=' .. clean_msg)
+                    end
+
+                    send_payload({
+                        type = 'chat',
+                        mode = report_mode,
+                        sender = sender_name,
+                        message = clean_msg
+                    })
+                end
+            end
+        end)
+        if not ok and settings.debug then
+            print_error('0x0B5 error: ' .. tostring(err))
+        end
+    end
 end)
 
 -- In-game addon commands
