@@ -1,6 +1,6 @@
 _addon.name = 'LSRelay'
 _addon.author = 'Frodobald'
-_addon.version = '1.4.0'
+_addon.version = '1.4.1'
 _addon.commands = {'lsrelay', 'lsr'}
 
 require('strings')
@@ -37,6 +37,34 @@ local chat_queue = {}
 local max_queue_size = 20
 local last_chat_time = 0
 local chat_delay = 0.6 -- 600ms between injected chat lines to prevent drop/kick
+
+-- Outgoing message buffer for handling disconnects/reconnects without loss
+local outgoing_queue = {}
+local max_outgoing_queue = 10
+local outgoing_queue_ttl = 15.0 -- Discard messages older than 15s
+local last_traffic_time = os.clock()
+local ping_interval = 30.0 -- 30s idle keepalive ping
+
+-- Echo suppression cache for locally injected Discord chat
+local recent_injected_chats = {}
+local function record_injected_chat(text)
+    local clean = text:gsub('%z', ''):match('^%s*(.-)%s*$')
+    if clean and #clean > 0 then
+        recent_injected_chats[clean] = os.clock()
+    end
+end
+
+local function is_recent_injected_chat(text)
+    local clean = text:gsub('%z', ''):match('^%s*(.-)%s*$')
+    if clean and recent_injected_chats[clean] then
+        if (os.clock() - recent_injected_chats[clean]) <= 3.0 then
+            return true
+        else
+            recent_injected_chats[clean] = nil
+        end
+    end
+    return false
+end
 
 -- Resolve active server name from Windower resources
 local function get_server_name()
@@ -176,15 +204,36 @@ local function print_error(msg)
     windower.add_to_chat(167, '[LSRelay Error] ' .. msg)
 end
 
-local function send_payload(payload)
+local flush_outgoing_queue -- forward declaration
+
+local function send_payload(payload, can_queue)
+    if can_queue == nil then can_queue = true end
+
+    local function queue_if_eligible()
+        if can_queue and payload and payload.type and payload.type ~= 'ping' and payload.type ~= 'hello' then
+            if #outgoing_queue >= max_outgoing_queue then
+                table.remove(outgoing_queue, 1)
+            end
+            table.insert(outgoing_queue, { payload = payload, timestamp = os.clock() })
+            if settings.debug then
+                print_msg('Buffered outgoing ' .. tostring(payload.type) .. ' (' .. #outgoing_queue .. ' queued).')
+            end
+            if not is_connected and (os.clock() - last_connect_attempt) >= connect_retry_interval then
+                try_connect()
+            end
+        end
+    end
+
     if not client or not is_connected then
         if settings.debug then
             print_error('Cannot send: socket not connected.')
         end
+        queue_if_eligible()
         return false
     end
+
     local json_str = to_json(payload) .. '\n'
-    if settings.debug then
+    if settings.debug and payload.type ~= 'ping' then
         print_msg('Sending: ' .. json_str:gsub('\n', ''))
     end
     
@@ -200,9 +249,23 @@ local function send_payload(payload)
             pcall(function() client:close() end)
             client = nil
         end
+        queue_if_eligible()
         return false
     end
+    last_traffic_time = os.clock()
     return true
+end
+
+function flush_outgoing_queue()
+    if not is_connected or not client or #outgoing_queue == 0 then return end
+    local now = os.clock()
+    local pending = outgoing_queue
+    outgoing_queue = {}
+    for _, entry in ipairs(pending) do
+        if (now - entry.timestamp) <= outgoing_queue_ttl then
+            send_payload(entry.payload, false)
+        end
+    end
 end
 
 local function disconnect()
@@ -249,6 +312,7 @@ local function try_connect()
             player = player_name,
             server = server_name
         })
+        flush_outgoing_queue()
     else
         if settings.debug then
             print_error('Failed to connect: ' .. tostring(conn_err))
@@ -263,8 +327,13 @@ local function handle_incoming_server_message(line)
     if settings.debug then
         print_msg('Received: ' .. line)
     end
+    last_traffic_time = os.clock()
     local data = parse_json_line(line)
     if not data or not data.type then
+        return
+    end
+
+    if data.type == 'pong' then
         return
     end
 
@@ -277,7 +346,6 @@ local function handle_incoming_server_message(line)
         windower.add_to_chat(200, '[LSRelay] (Code expires in ' .. math.floor(expires / 60) .. ' minutes)')
         windower.add_to_chat(200, '--------------------------------------------------')
     elseif data.type == 'inject_chat' then
-        local mode = (data.mode or 'ls1'):lower()
         local target = data.target
         local msg = data.message or ''
         if msg ~= '' then
@@ -285,14 +353,15 @@ local function handle_incoming_server_message(line)
                 table.remove(chat_queue, 1)
             end
             table.insert(chat_queue, {
-                mode = mode,
+                is_tell = (data.mode == 'tell' or target ~= nil),
                 target = target,
                 server = data.server,
                 linkshell = data.linkshell,
                 message = msg
             })
             if settings.debug then
-                print_msg('Queued chat for ' .. (data.linkshell or mode):upper() .. ': ' .. msg)
+                local dest = data.linkshell or (target and ('tell:' .. tostring(target))) or 'LS'
+                print_msg('Queued chat for ' .. dest .. ': ' .. msg)
             end
         end
     end
@@ -355,23 +424,15 @@ local function process_chat_queue()
 
     local item = table.remove(chat_queue, 1)
     local cmd = nil
-    if item.mode == 'tell' then
+    if item.is_tell then
         cmd = '/t ' .. tostring(item.target) .. ' ' .. item.message
     else
         local ls1_name, ls2_name = get_equipped_linkshells()
         local target_ls = item.linkshell and item.linkshell:lower() or nil
-        local use_ls2 = false
-
-        if target_ls and ls2_name and target_ls == ls2_name:lower() then
-            use_ls2 = true
-        elseif target_ls and ls1_name and target_ls == ls1_name:lower() then
-            use_ls2 = false
-        else
-            use_ls2 = (item.mode == 'ls2')
-        end
-
+        local use_ls2 = (target_ls and ls2_name and target_ls == ls2_name:lower())
         local prefix = use_ls2 and '/l2 ' or '/l '
         cmd = prefix .. item.message
+        record_injected_chat(item.message)
     end
 
     windower.chat.input(cmd)
@@ -400,10 +461,20 @@ local function trigger_gm_safety_protocol(sender)
     end
 end
 
+local function check_keepalive()
+    if not is_connected or not client then return end
+    local now = os.clock()
+    if (now - last_traffic_time) >= ping_interval then
+        send_payload({ type = 'ping' }, false)
+        last_traffic_time = now
+    end
+end
+
 -- Windower Render Loop
 windower.register_event('prerender', function()
     poll_socket()
     process_chat_queue()
+    check_keepalive()
 end)
 
 -- Listen for in-game Linkshell chat messages
@@ -460,13 +531,23 @@ windower.register_event('chat message', function(message, sender, mode, gm)
         clean_msg = clean_msg:strip_format()
     end
 
+    local player = windower.ffxi.get_player()
+    local my_name = player and player.name
+    if my_name and sender and sender:lower() == my_name:lower() then
+        if is_recent_injected_chat(clean_msg) then
+            if settings.debug then
+                print_msg('Suppressed chat message echo for: ' .. clean_msg)
+            end
+            return
+        end
+    end
+
     local ls1_name, ls2_name = get_equipped_linkshells()
     local server_name = get_server_name()
     local active_ls = (ls_mode == 'ls2') and ls2_name or ls1_name
 
     send_payload({
         type = 'chat',
-        mode = ls_mode,
         server = server_name,
         linkshell = active_ls,
         sender = sender,
@@ -486,6 +567,13 @@ windower.register_event('outgoing chunk', function(id, data, modified, injected,
             local clean_msg = raw_msg:gsub('%z', ''):match('^%s*(.-)%s*$')
 
             if clean_msg and #clean_msg > 0 then
+                if is_recent_injected_chat(clean_msg) then
+                    if settings.debug then
+                        print_msg('Suppressed 0x0B5 outgoing echo for: ' .. clean_msg)
+                    end
+                    return
+                end
+
                 local ls_mode = (mode == 5 and 'ls1') or (mode == 27 and 'ls2') or nil
                 if ls_mode then
                     if clean_msg.strip_format then
@@ -504,7 +592,6 @@ windower.register_event('outgoing chunk', function(id, data, modified, injected,
 
                     send_payload({
                         type = 'chat',
-                        mode = ls_mode,
                         server = server_name,
                         linkshell = active_ls,
                         sender = sender_name,
@@ -539,7 +626,7 @@ windower.register_event('addon command', function(command, ...)
         if settings.relay_gm and settings.gm_unload_addons ~= '' then
             print_msg('  GM Unload Addons: ' .. settings.gm_unload_addons)
         end
-        print_msg('  Queued Messages: ' .. tostring(#chat_queue))
+        print_msg('  Queued Incoming: ' .. tostring(#chat_queue) .. ' | Queued Outgoing: ' .. tostring(#outgoing_queue))
     elseif command == 'link' then
         if not is_connected then
             print_error('Not connected to LSRelay Hub. Type //lsr reconnect or check host.')
