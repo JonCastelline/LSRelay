@@ -280,11 +280,23 @@ local function disconnect()
         end
     end
     read_buffer = ""
+    chat_queue = {}
+    outgoing_queue = {}
 end
 
 local function try_connect()
-    disconnect()
     last_connect_attempt = os.clock()
+
+    local info = windower.ffxi.get_info()
+    if not info or not info.logged_in then
+        return
+    end
+    local player = windower.ffxi.get_player()
+    if not player or not player.name then
+        return
+    end
+
+    disconnect()
 
     if settings.debug then
         print_msg('Connecting to Hub at ' .. settings.tcp_host .. ':' .. settings.tcp_port .. '...')
@@ -709,21 +721,18 @@ windower.register_event('addon command', function(command, ...)
 end)
 
 windower.register_event('load', function()
-    try_connect()
+    if windower.ffxi.get_player() then
+        try_connect()
+    end
 end)
 
 windower.register_event('login', function(name)
-    if is_connected then
-        local player_name = name or (windower.ffxi.get_player() and windower.ffxi.get_player().name) or 'Unknown'
-        local server_name = get_server_name()
-        send_payload({
-            type = 'hello',
-            player = player_name,
-            server = server_name
-        })
-    else
-        try_connect()
-    end
+    config.reload(settings)
+    try_connect()
+end)
+
+windower.register_event('logout', function()
+    disconnect()
 end)
 
 windower.register_event('unload', function()
