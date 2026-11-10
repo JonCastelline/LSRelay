@@ -1,6 +1,6 @@
 _addon.name = 'LSRelay'
 _addon.author = 'Frodobald'
-_addon.version = '1.4.1'
+_addon.version = '1.4.2'
 _addon.commands = {'lsrelay', 'lsr'}
 
 require('strings')
@@ -303,7 +303,7 @@ local function try_connect()
         sock:settimeout(0)
         client = sock
         is_connected = true
-        print_msg('Connected to Hub at ' .. settings.tcp_host .. ':' .. settings.tcp_port)
+        print_msg('Connected to Hub')
         local player = windower.ffxi.get_player()
         local player_name = player and player.name or 'Unknown'
         local server_name = get_server_name()
@@ -616,11 +616,10 @@ windower.register_event('addon command', function(command, ...)
         local server_name = get_server_name()
         local ls1_name, ls2_name = get_equipped_linkshells()
         print_msg('Status:')
-        print_msg('  Character: ' .. (player and player.name or 'Unknown') .. (server_name and (' on ' .. server_name) or ''))
+        print_msg('  Character: ' .. (player and player.name or 'Unknown'))
         print_msg('  Linkshell 1 (/l): ' .. (ls1_name or 'None'))
         print_msg('  Linkshell 2 (/l2): ' .. (ls2_name or 'None'))
-        print_msg('  Hub Server: ' .. settings.tcp_host .. ':' .. settings.tcp_port)
-        print_msg('  Connection: ' .. (is_connected and 'Connected' or 'Disconnected'))
+        print_msg('  ' .. (is_connected and 'Connected' or 'Disconnected'))
         print_msg('  Private Tells: ' .. (settings.relay_tells and 'ON' or 'OFF'))
         print_msg('  GM Alerts: ' .. (settings.relay_gm and 'ON' or 'OFF'))
         if settings.relay_gm and settings.gm_unload_addons ~= '' then
