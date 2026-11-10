@@ -280,9 +280,13 @@ local function disconnect()
         end
     end
     read_buffer = ""
+    chat_queue = {}
+    outgoing_queue = {}
 end
 
 local function try_connect()
+    last_connect_attempt = os.clock()
+
     local info = windower.ffxi.get_info()
     if not info or not info.logged_in then
         return
@@ -293,7 +297,6 @@ local function try_connect()
     end
 
     disconnect()
-    last_connect_attempt = os.clock()
 
     if settings.debug then
         print_msg('Connecting to Hub at ' .. settings.tcp_host .. ':' .. settings.tcp_port .. '...')
