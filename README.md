@@ -41,6 +41,9 @@ A lightweight, non-blocking Final Fantasy XI (Windower 4) addon that bridges in-
 
 ## Setup & Pairing
 
+> [!NOTE]
+> To connect a new Linkshell to LSRelay, please contact **Frodobald** on Discord or **JonCastelline** on GitHub to have your Linkshell registered and activated on the server.
+
 1. **Configure Hub Host** (if connecting to a remote or hosted server):
    ```text
    //lsr host <host_or_ip>
@@ -64,7 +67,7 @@ A lightweight, non-blocking Final Fantasy XI (Windower 4) addon that bridges in-
 
 | Command | Description |
 | :--- | :--- |
-| `//lsr status` | Displays character name, Hub address, connection status, equipped linkshells, and alert settings. |
+| `//lsr status` | Displays character name, connection status, equipped linkshells, and alert settings. |
 | `//lsr link` | Requests a 5-minute pairing code to link with your Discord account. |
 | `//lsr host <host>` | Configures the Hub IP or domain name. |
 | `//lsr port <port>` | Configures the Hub TCP port (default: `45124`). |
