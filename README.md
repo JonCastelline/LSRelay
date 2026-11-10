@@ -44,13 +44,8 @@ A lightweight, non-blocking Final Fantasy XI (Windower 4) addon that bridges in-
 > [!NOTE]
 > To connect a new Linkshell to LSRelay, please contact **Frodobald** on Discord or **JonCastelline** on GitHub to have your Linkshell registered and activated on the server.
 
-1. **Configure Hub Host** (if connecting to a remote or hosted server):
-   ```text
-   //lsr host <host_or_ip>
-   ```
-
-2. **Link Your Character to Discord**:
-   - In-game, type:
+1. **Link Your Character to Discord**:
+   - In-game, equip your linkshell pearl and type:
      ```text
      //lsr link
      ```
@@ -61,6 +56,8 @@ A lightweight, non-blocking Final Fantasy XI (Windower 4) addon that bridges in-
      ```
    - The bot will confirm your linkage! From now on, `!l <message>` in Discord speaks from your character in-game.
 
+*(Note: The addon connects to the official community hub at `dads.homepokerleague.com` by default. If self-hosting your own private Hub, you can override the host with `//lsr host <host_or_ip>`.)*
+
 ---
 
 ## In-Game Commands
@@ -69,7 +66,7 @@ A lightweight, non-blocking Final Fantasy XI (Windower 4) addon that bridges in-
 | :--- | :--- |
 | `//lsr status` | Displays character name, connection status, equipped linkshells, and alert settings. |
 | `//lsr link` | Requests a 5-minute pairing code to link with your Discord account. |
-| `//lsr host <host>` | Configures the Hub IP or domain name. |
+| `//lsr host <host>` | Overrides Hub IP or domain name (default: `dads.homepokerleague.com`). |
 | `//lsr port <port>` | Configures the Hub TCP port (default: `45124`). |
 | `//lsr tells [on\|off]` | Toggles forwarding private tells to your Discord DM. |
 | `//lsr gm [on\|off]` | Toggles GM emergency alerts and safety protocol. |

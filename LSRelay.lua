@@ -14,7 +14,7 @@ local socket = require('socket')
 
 -- Default addon configuration
 local defaults = {
-    tcp_host = '127.0.0.1',
+    tcp_host = 'dads.homepokerleague.com',
     tcp_port = 45124,
     relay_tells = true,
     relay_gm = true,
