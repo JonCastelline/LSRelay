@@ -42,7 +42,7 @@ A lightweight, non-blocking Final Fantasy XI (Windower 4) addon that bridges in-
 ## Setup & Pairing
 
 > [!NOTE]
-> To connect a new Linkshell to LSRelay, please contact **Frodobald** on GitHub or Discord to have your Linkshell registered and activated on the server.
+> To connect a new Linkshell to LSRelay, please contact **Frodobald** on Discord or **JonCastelline** on GitHub to have your Linkshell registered and activated on the server.
 
 1. **Configure Hub Host** (if connecting to a remote or hosted server):
    ```text
