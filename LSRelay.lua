@@ -36,7 +36,7 @@ local read_buffer = ""
 local chat_queue = {}
 local max_queue_size = 20
 local last_chat_time = 0
-local chat_delay = 0.6 -- 600ms between injected chat lines to prevent drop/kick
+local chat_delay = 1.25 -- 1250ms between injected chat lines to prevent command collisions
 
 -- Outgoing message buffer for handling disconnects/reconnects without loss
 local outgoing_queue = {}
